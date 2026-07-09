@@ -35,6 +35,7 @@ import {
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { API_URLS, API_CONFIG, buildApiUrlWithParams } from "@/lib/config";
+import { buildLineDiff } from "@/lib/code-ai-edit";
 import {
   Dialog,
   DialogContent,
@@ -197,6 +198,14 @@ interface ExportResponsePayload {
     pdf?: string | null;
   };
 }
+
+type CodeDiffRow = {
+  id: string;
+  type: "unchanged" | "removed" | "added";
+  oldLineNumber: number | null;
+  newLineNumber: number | null;
+  content: string;
+};
 
 const PREVIEW_TABLE_PAGE_SIZE = 10;
 const BLOCKED_UPLOAD_EXTENSIONS = new Set(["py"]);
@@ -1009,6 +1018,13 @@ export function ThreePanelInterface() {
   const [showCodeEditor, setShowCodeEditor] = useState(false);
   const [isExecutingCode, setIsExecutingCode] = useState(false);
   const [codeExecutionResult, setCodeExecutionResult] = useState("");
+  const [codeEditInstruction, setCodeEditInstruction] = useState("");
+  const [isEditingCodeWithAi, setIsEditingCodeWithAi] = useState(false);
+  const [pendingCodeEdit, setPendingCodeEdit] = useState<{
+    originalCode: string;
+    modifiedCode: string;
+    diffRows: CodeDiffRow[];
+  } | null>(null);
   const [workspaceView, setWorkspaceView] = useState<
     "all" | "uploaded" | "generated"
   >("uploaded");
@@ -4310,6 +4326,138 @@ export function ThreePanelInterface() {
     }
   };
 
+  const validateCodeEditRuntime = () => {
+    const trimmedCustomModelName = customModelName.trim();
+    if (llmProvider === "heywhale" && !heywhaleApiKey.trim()) {
+      toastRef.current({
+        description: textLabels.needHeywhaleKey,
+        variant: "destructive",
+      });
+      return null;
+    }
+    if (llmProvider === "custom" && !trimmedCustomModelName) {
+      toastRef.current({
+        description: textLabels.needCustomModel,
+        variant: "destructive",
+      });
+      return null;
+    }
+    if (llmProvider === "custom" && !customApiBase.trim()) {
+      toastRef.current({
+        description: textLabels.needCustomApiBase,
+        variant: "destructive",
+      });
+      return null;
+    }
+    return trimmedCustomModelName;
+  };
+
+  const handleCodeEditorChange = (value?: string) => {
+    setCodeEditorContent(value || "");
+    setPendingCodeEdit(null);
+  };
+
+  const requestAiCodeEdit = async () => {
+    const instruction = codeEditInstruction.trim();
+    const trimmedCustomModelName = validateCodeEditRuntime();
+    if (trimmedCustomModelName === null) return;
+    if (!codeEditorContent.trim()) {
+      toastRef.current({
+        description:
+          uiLanguage === "zh" ? "请先在编辑器中放入代码" : "Add code to the editor first.",
+        variant: "destructive",
+      });
+      return;
+    }
+    if (!instruction) {
+      toastRef.current({
+        description:
+          uiLanguage === "zh" ? "请输入自然语言修改指令" : "Enter an edit instruction first.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setIsEditingCodeWithAi(true);
+    setPendingCodeEdit(null);
+    try {
+      const response = await fetch(API_URLS.EDIT_CODE, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          code: codeEditorContent,
+          instruction,
+          model:
+            llmProvider === "custom"
+              ? trimmedCustomModelName || DEFAULT_MODEL_NAME
+              : DEFAULT_MODEL_NAME,
+          provider: llmProvider,
+          api_key:
+            llmProvider === "heywhale"
+              ? heywhaleApiKey.trim()
+              : llmProvider === "custom"
+                ? customApiKey.trim()
+                : "",
+          api_base: llmProvider === "custom" ? customApiBase.trim() : "",
+          temperature: normalizedTemperature,
+          session_id: sessionId,
+        }),
+      });
+
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload?.detail || `HTTP ${response.status}`);
+      }
+
+      const modifiedCode = String(payload?.code || "");
+      if (!modifiedCode.trim()) {
+        throw new Error("LLM response did not contain modified code");
+      }
+
+      setPendingCodeEdit({
+        originalCode: codeEditorContent,
+        modifiedCode,
+        diffRows: buildLineDiff(codeEditorContent, modifiedCode) as CodeDiffRow[],
+      });
+      toastRef.current({
+        description:
+          uiLanguage === "zh"
+            ? "已生成修改预览，请确认或回滚"
+            : "Generated a diff preview. Confirm or roll it back.",
+      });
+    } catch (error) {
+      toastRef.current({
+        description:
+          uiLanguage === "zh"
+            ? `自然语言修改失败：${error}`
+            : `AI code edit failed: ${error}`,
+        variant: "destructive",
+      });
+    } finally {
+      setIsEditingCodeWithAi(false);
+    }
+  };
+
+  const confirmAiCodeEdit = () => {
+    if (!pendingCodeEdit) return;
+    setCodeEditorContent(pendingCodeEdit.modifiedCode);
+    setSelectedCodeSection(pendingCodeEdit.modifiedCode);
+    setPendingCodeEdit(null);
+    toastRef.current({
+      description: uiLanguage === "zh" ? "修改已应用到编辑器" : "Edit applied to the editor.",
+    });
+  };
+
+  const rollbackAiCodeEdit = () => {
+    setPendingCodeEdit(null);
+    toastRef.current({
+      description:
+        uiLanguage === "zh"
+          ? "已回滚 AI 修改预览，编辑器保持原代码"
+          : "AI edit preview rolled back. The editor kept the original code.",
+    });
+  };
+
   /*
   const renderMarkdownContentLegacy = useCallback((
     content: string,
@@ -6462,6 +6610,8 @@ export function ThreePanelInterface() {
                       setCodeEditorContent("");
                       setSelectedCodeSection("");
                       setCodeExecutionResult("");
+                      setCodeEditInstruction("");
+                      setPendingCodeEdit(null);
                       setShowCodeEditor(false);
                     }}
                   >
@@ -6470,7 +6620,7 @@ export function ThreePanelInterface() {
                   <Button
                     size="sm"
                     onClick={executeCode}
-                    disabled={!codeEditorContent || isExecutingCode}
+                    disabled={!codeEditorContent || isExecutingCode || !!pendingCodeEdit}
                     className="bg-black text-white dark:bg-white dark:text-black"
                   >
                     {isExecutingCode
@@ -6486,6 +6636,64 @@ export function ThreePanelInterface() {
             </SheetHeader>
 
             <div className="flex-1 min-h-0 flex flex-col p-4 editor-container overflow-hidden bg-gray-50 dark:bg-gray-950">
+              <div className="mb-3 rounded-2xl border border-emerald-200 bg-emerald-50/70 p-3 dark:border-emerald-900/60 dark:bg-emerald-950/20">
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-medium text-emerald-950 dark:text-emerald-100">
+                      {uiLanguage === "zh" ? "自然语言修改代码" : "Natural-language code edit"}
+                    </div>
+                    <div className="text-xs text-emerald-700 dark:text-emerald-300">
+                      {uiLanguage === "zh"
+                        ? "输入修改意图，后端 LLM 会返回完整修改后的脚本。"
+                        : "Describe the change; the backend LLM returns a complete revised script."}
+                    </div>
+                  </div>
+                  {pendingCodeEdit && (
+                    <div className="flex shrink-0 items-center gap-2">
+                      <Button
+                        size="sm"
+                        onClick={confirmAiCodeEdit}
+                        className="bg-emerald-700 text-white hover:bg-emerald-800"
+                      >
+                        {uiLanguage === "zh" ? "应用修改" : "Apply"}
+                      </Button>
+                      <Button size="sm" variant="outline" onClick={rollbackAiCodeEdit}>
+                        {uiLanguage === "zh" ? "回滚预览" : "Rollback"}
+                      </Button>
+                    </div>
+                  )}
+                </div>
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <Textarea
+                    value={codeEditInstruction}
+                    onChange={(event) => setCodeEditInstruction(event.target.value)}
+                    placeholder={
+                      uiLanguage === "zh"
+                        ? "例如：把结果保存为 CSV，并为每个关键步骤补充中文注释"
+                        : "Example: save the result as CSV and add comments for each key step"
+                    }
+                    className="min-h-16 resize-none bg-white/90 text-sm dark:bg-black/30"
+                    disabled={isEditingCodeWithAi}
+                  />
+                  <Button
+                    onClick={requestAiCodeEdit}
+                    disabled={
+                      isEditingCodeWithAi ||
+                      !codeEditorContent.trim() ||
+                      !codeEditInstruction.trim()
+                    }
+                    className="sm:h-auto sm:w-28 bg-emerald-700 text-white hover:bg-emerald-800"
+                  >
+                    {isEditingCodeWithAi
+                      ? uiLanguage === "zh"
+                        ? "生成中..."
+                        : "Editing..."
+                      : uiLanguage === "zh"
+                        ? "生成修改"
+                        : "Generate"}
+                  </Button>
+                </div>
+              </div>
               <div
                 className="min-h-0 border border-gray-200 dark:border-gray-700 rounded-2xl overflow-hidden bg-white dark:bg-black flex flex-col"
                 style={{ height: `${editorHeight}%` }}
@@ -6500,12 +6708,12 @@ export function ThreePanelInterface() {
                     </span>
                   )}
                 </div>
-                <div className="flex-1 min-h-0">
+                <div className="flex-1 min-h-0 relative">
                   <Editor
                     height="100%"
                     defaultLanguage="python"
                     value={codeEditorContent}
-                    onChange={(value) => setCodeEditorContent(value || "")}
+                    onChange={handleCodeEditorChange}
                     theme={isDarkMode ? "vs-dark" : "light"}
                     options={{
                       fontSize: 14,
@@ -6548,6 +6756,40 @@ export function ThreePanelInterface() {
                       </div>
                     }
                   />
+                  {pendingCodeEdit && (
+                    <div className="absolute inset-0 z-10 overflow-auto bg-white font-mono text-[13px] leading-5 dark:bg-black">
+                      {pendingCodeEdit.diffRows.map((row) => (
+                        <div
+                          key={row.id}
+                          className={
+                            row.type === "added"
+                              ? "flex min-w-max border-l-4 border-emerald-500 bg-emerald-50 text-emerald-950 dark:bg-emerald-950/40 dark:text-emerald-100"
+                              : row.type === "removed"
+                                ? "flex min-w-max border-l-4 border-red-500 bg-red-50 text-red-950 dark:bg-red-950/40 dark:text-red-100"
+                                : "flex min-w-max border-l-4 border-transparent text-gray-800 dark:text-gray-200"
+                          }
+                        >
+                          <span className="w-12 shrink-0 select-none border-r border-gray-100 px-2 py-0.5 text-right text-gray-400 dark:border-gray-800">
+                            {row.oldLineNumber ?? ""}
+                          </span>
+                          <span className="w-12 shrink-0 select-none border-r border-gray-100 px-2 py-0.5 text-right text-gray-400 dark:border-gray-800">
+                            {row.newLineNumber ?? ""}
+                          </span>
+                          <span className="w-7 shrink-0 select-none px-2 py-0.5 text-center font-semibold">
+                            {row.type === "added" ? "+" : row.type === "removed" ? "-" : " "}
+                          </span>
+                          <pre className="m-0 flex-1 whitespace-pre px-2 py-0.5">
+                            {row.content || " "}
+                          </pre>
+                        </div>
+                      ))}
+                      {pendingCodeEdit.diffRows.length === 0 && (
+                        <div className="p-4 text-sm text-gray-500">
+                          {uiLanguage === "zh" ? "没有代码差异" : "No code changes."}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
 
