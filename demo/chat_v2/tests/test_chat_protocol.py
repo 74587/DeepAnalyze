@@ -2,6 +2,7 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from backend_app.services import chat, workspace
@@ -9,6 +10,13 @@ from backend_app.services import chat, workspace
 
 def stream_text(text):
     yield text, {"choices": [{"finish_reason": "stop"}]}
+
+
+def execution_outcome(result="ok"):
+    return SimpleNamespace(
+        result=result,
+        execution_content=f"\n<Execute>\n```\n{result}\n```\n</Execute>\n",
+    )
 
 
 class ChatProtocolIntegrationTest(unittest.TestCase):
@@ -31,12 +39,12 @@ class ChatProtocolIntegrationTest(unittest.TestCase):
         self.addCleanup(self.workspace_settings_patch.stop)
 
     def test_truncated_code_is_never_executed(self):
-        execute_mock = Mock(return_value="must not run")
+        execute_mock = Mock(return_value=execution_outcome("must not run"))
         with (
             patch.object(chat, "_iter_local_stream", return_value=stream_text(
                 "<Analyze>plan</Analyze><Code>print('unsafe')"
             )),
-            patch.object(chat, "execute_code_safe", execute_mock),
+            patch.object(chat, "execute_managed_code", execute_mock),
         ):
             output = "".join(chat.bot_stream(
                 [{"role": "user", "content": "analyze"}], [], "session-truncated"
@@ -51,7 +59,9 @@ class ChatProtocolIntegrationTest(unittest.TestCase):
         ])
         with (
             patch.object(chat, "_iter_local_stream", side_effect=lambda *_: next(responses)),
-            patch.object(chat, "execute_code_safe", return_value="ok") as execute_mock,
+            patch.object(
+                chat, "execute_managed_code", return_value=execution_outcome()
+            ) as execute_mock,
         ):
             output = "".join(chat.bot_stream(
                 [{"role": "user", "content": "analyze"}], [], "session-complete"
@@ -73,7 +83,9 @@ class ChatProtocolIntegrationTest(unittest.TestCase):
             patch.object(chat, "_iter_local_stream", return_value=stream_text(
                 "<Analyze>plan</Analyze><Code>print('ok')</Code>"
             )),
-            patch.object(chat, "execute_code_safe", return_value="ok"),
+            patch.object(
+                chat, "execute_managed_code", return_value=execution_outcome()
+            ),
         ):
             output = "".join(chat.bot_stream(
                 [{"role": "user", "content": "analyze"}], [], "session-budget"
@@ -88,6 +100,27 @@ class ChatProtocolIntegrationTest(unittest.TestCase):
         finally:
             chat.release_session_run("session-busy", lock)
         self.assertIn("[Session Busy]", output)
+
+    def test_explicit_empty_file_selection_does_not_include_all_files(self):
+        workspace_dir = workspace.get_session_workspace("session-selection")
+        Path(workspace_dir, "input.csv").write_text("a\n1\n", encoding="utf-8")
+        explicit_messages = [{"role": "user", "content": "analyze"}]
+        chat._build_user_prompt(
+            explicit_messages,
+            [],
+            workspace_dir,
+            use_all_files_when_empty=False,
+        )
+        self.assertNotIn("# Data", explicit_messages[-1]["content"])
+
+        legacy_messages = [{"role": "user", "content": "analyze"}]
+        chat._build_user_prompt(
+            legacy_messages,
+            [],
+            workspace_dir,
+            use_all_files_when_empty=True,
+        )
+        self.assertIn("input.csv", legacy_messages[-1]["content"])
 
 
 if __name__ == "__main__":

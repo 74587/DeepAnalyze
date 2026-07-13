@@ -12,6 +12,7 @@ import { configureMonaco } from "@/lib/monaco-config";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Switch } from "@/components/ui/switch";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -36,6 +37,13 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { API_URLS, API_CONFIG, buildApiUrlWithParams } from "@/lib/config";
 import { buildLineDiff } from "@/lib/code-ai-edit";
+import {
+  buildSessionStorageKey,
+  normalizeSessionMessages,
+  serializeSessionMessages,
+  toServerMessages,
+  toggleSelectedPath,
+} from "@/lib/session-state";
 import {
   Dialog,
   DialogContent,
@@ -196,6 +204,24 @@ interface ExportResponsePayload {
   download_urls?: {
     md?: string | null;
     pdf?: string | null;
+  };
+}
+
+interface SessionStatePayload {
+  messages?: Array<{
+    id?: string;
+    role: "user" | "assistant";
+    content: string;
+    timestamp?: string;
+    attachments?: FileAttachment[];
+  }>;
+  task_config?: {
+    selected_files?: string[];
+    provider?: LlmProvider;
+    model?: string;
+    temperature?: number;
+    system_prompt?: string;
+    ui_language?: UILanguage;
   };
 }
 
@@ -1019,10 +1045,16 @@ export function ThreePanelInterface() {
   const [isExecutingCode, setIsExecutingCode] = useState(false);
   const [codeExecutionResult, setCodeExecutionResult] = useState("");
   const [codeEditInstruction, setCodeEditInstruction] = useState("");
+  const [codeEditorOriginalCode, setCodeEditorOriginalCode] = useState("");
+  const [appliedCodeEdit, setAppliedCodeEdit] = useState<{
+    originalCode: string;
+    instruction: string;
+  } | null>(null);
   const [isEditingCodeWithAi, setIsEditingCodeWithAi] = useState(false);
   const [pendingCodeEdit, setPendingCodeEdit] = useState<{
     originalCode: string;
     modifiedCode: string;
+    instruction: string;
     diffRows: CodeDiffRow[];
   } | null>(null);
   const [workspaceView, setWorkspaceView] = useState<
@@ -1030,6 +1062,10 @@ export function ThreePanelInterface() {
   >("uploaded");
   const [workspaceSearch, setWorkspaceSearch] = useState("");
   const [selectedWorkspacePath, setSelectedWorkspacePath] = useState("");
+  const [selectedAnalysisFiles, setSelectedAnalysisFiles] = useState<Set<string>>(
+    () => new Set()
+  );
+  const fileSelectionInitializedRef = useRef(false);
   const [uiLanguage, setUiLanguage] = useState<UILanguage>("en");
   const [systemPrompt, setSystemPrompt] = useState(DEFAULT_SYSTEM_PROMPT);
   const [llmProvider, setLlmProvider] = useState<LlmProvider>("local");
@@ -1209,37 +1245,73 @@ export function ThreePanelInterface() {
     }
   }, [messages, scrollToBottom, streamingMessageId]);
 
-  // 聊天消息本地缓存：加载与保存
-  const CHAT_STORAGE_KEY = "chat_messages_v1";
+  // 服务端 session state 是主存储，本地缓存仅用于离线回退。
   const [chatLoaded, setChatLoaded] = useState(false);
 
-  // 挂载后再次从本地覆盖加载，避免 SSR 初始状态覆盖缓存
   useEffect(() => {
-    try {
-      if (typeof window === "undefined") return;
-      const raw = localStorage.getItem(CHAT_STORAGE_KEY);
-      if (raw) {
-        const arr = JSON.parse(raw) as any[];
-        if (Array.isArray(arr) && arr.length) {
-          const restored = arr.map((m) => ({
-            ...m,
-            timestamp: m.timestamp ? new Date(m.timestamp) : new Date(),
-          })) as Message[];
-          setMessages(restored);
+    if (!sessionId || typeof window === "undefined") return;
+    let cancelled = false;
+    setChatLoaded(false);
+
+    const restoreSession = async () => {
+      let restoredMessages: Message[] = [];
+      try {
+        const response = await fetch(
+          `${API_URLS.SESSION_STATE}?session_id=${encodeURIComponent(sessionId)}`
+        );
+        if (response.ok) {
+          const state = (await response.json()) as SessionStatePayload;
+          restoredMessages = normalizeSessionMessages(state.messages || []) as Message[];
+          const task = state.task_config || {};
+          const selectedFiles = Array.isArray(task.selected_files)
+            ? task.selected_files
+            : [];
+          setSelectedAnalysisFiles(new Set(selectedFiles));
+          fileSelectionInitializedRef.current = selectedFiles.length > 0;
+          if (task.provider) setLlmProvider(task.provider);
+          if (task.model) setCustomModelName(task.model);
+          if (typeof task.temperature === "number") {
+            setModelTemperature(String(task.temperature));
+          }
+          if (task.system_prompt) setSystemPrompt(task.system_prompt);
+          if (task.ui_language === "zh" || task.ui_language === "en") {
+            setUiLanguage(task.ui_language);
+          }
+        }
+      } catch (error) {
+        console.warn("load server session state failed", error);
+      }
+
+      if (!restoredMessages.length) {
+        try {
+          const raw = localStorage.getItem(
+            buildSessionStorageKey(sessionId)
+          );
+          const cached = raw ? (JSON.parse(raw) as any[]) : [];
+          if (Array.isArray(cached)) {
+            restoredMessages = normalizeSessionMessages(cached) as Message[];
+          }
+        } catch (error) {
+          console.warn("load local session cache failed", error);
         }
       }
-    } catch (e) {
-      console.warn("post-mount load chat cache failed", e);
-    }
-    setChatLoaded(true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
-  // 消息本地缓存：流式生成时节流保存，避免每个 chunk 都写 localStorage 导致卡顿
+      if (!cancelled) {
+        if (restoredMessages.length) setMessages(restoredMessages);
+        setChatLoaded(true);
+      }
+    };
+
+    void restoreSession();
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId]);
+
   const saveChatTimerRef = useRef<number | null>(null);
   useEffect(() => {
     try {
-      if (!chatLoaded) return; // 避免首屏用欢迎消息覆盖已有缓存
+      if (!chatLoaded || !sessionId) return;
       if (typeof window === "undefined") return;
 
       if (saveChatTimerRef.current) {
@@ -1250,16 +1322,17 @@ export function ThreePanelInterface() {
       const delay = isTyping ? 1500 : 200;
       saveChatTimerRef.current = window.setTimeout(() => {
         try {
-          const data = JSON.stringify(
-            messages.map((m) => ({
-              ...m,
-              timestamp: (m.timestamp instanceof Date
-                ? m.timestamp
-                : new Date(m.timestamp as any)
-              ).toISOString(),
-            }))
-          );
-          localStorage.setItem(CHAT_STORAGE_KEY, data);
+          const data = JSON.stringify(serializeSessionMessages(messages));
+          localStorage.setItem(buildSessionStorageKey(sessionId), data);
+          const persistedMessages = toServerMessages(messages);
+          void fetch(API_URLS.SESSION_MESSAGES, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              session_id: sessionId,
+              messages: persistedMessages,
+            }),
+          }).catch((error) => console.warn("save server session failed", error));
         } catch (e) {
           console.warn("save chat cache failed", e);
         } finally {
@@ -1269,7 +1342,7 @@ export function ThreePanelInterface() {
     } catch (e) {
       console.warn("save chat cache failed", e);
     }
-  }, [messages, chatLoaded, isTyping]);
+  }, [messages, chatLoaded, isTyping, sessionId]);
 
   // 一键清空聊天：保留欢迎消息（仅本地显示）
   const clearChat = () => {
@@ -1287,7 +1360,10 @@ export function ThreePanelInterface() {
     setMessages([welcome]);
     try {
       if (typeof window !== "undefined") {
-        localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify([welcome]));
+        localStorage.setItem(
+          buildSessionStorageKey(sessionId),
+          JSON.stringify([welcome])
+        );
       }
     } catch { }
     toast({ description: "已清空聊天" });
@@ -1633,6 +1709,28 @@ export function ThreePanelInterface() {
     [generatedDirectNameSet, isGeneratedDirectFilePath, isSessionRootFilePath]
   );
 
+  useEffect(() => {
+    if (
+      !chatLoaded ||
+      fileSelectionInitializedRef.current ||
+      !rightPanelSourceFiles.length
+    ) {
+      return;
+    }
+    const uploadedPaths = rightPanelSourceFiles
+      .filter((file) => !isGeneratedWorkspaceFile(file))
+      .map((file) => file.path);
+    setSelectedAnalysisFiles(new Set(uploadedPaths));
+    fileSelectionInitializedRef.current = true;
+  }, [chatLoaded, isGeneratedWorkspaceFile, rightPanelSourceFiles]);
+
+  const toggleAnalysisFile = useCallback((path: string, selected: boolean) => {
+    setSelectedAnalysisFiles((current) => {
+      return toggleSelectedPath(current, path, selected);
+    });
+    fileSelectionInitializedRef.current = true;
+  }, []);
+
   const isGeneratedBundleFile = useCallback(
     (file?: Pick<WorkspaceFile, "path"> | null) => {
       return isGeneratedPath(file?.path);
@@ -1709,6 +1807,46 @@ export function ThreePanelInterface() {
 
     return mergedPrompt;
   }, [customModelName, llmProvider, systemPrompt, uiLanguage]);
+
+  const latestTaskInstruction = useMemo(() => {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      if (messages[index].sender === "user") return messages[index].content;
+    }
+    return inputValue;
+  }, [inputValue, messages]);
+
+  useEffect(() => {
+    if (!chatLoaded || !sessionId) return;
+    const timer = window.setTimeout(() => {
+      void fetch(API_URLS.SESSION_TASK, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          session_id: sessionId,
+          task_config: {
+            instruction: latestTaskInstruction,
+            selected_files: Array.from(selectedAnalysisFiles),
+            provider: llmProvider,
+            model: llmProvider === "custom" ? customModelName : DEFAULT_MODEL_NAME,
+            temperature: normalizedTemperature,
+            system_prompt: effectiveSystemPrompt,
+            ui_language: uiLanguage,
+          },
+        }),
+      }).catch((error) => console.warn("save task config failed", error));
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [
+    chatLoaded,
+    customModelName,
+    effectiveSystemPrompt,
+    latestTaskInstruction,
+    llmProvider,
+    normalizedTemperature,
+    selectedAnalysisFiles,
+    sessionId,
+    uiLanguage,
+  ]);
 
   useEffect(() => {
     if (!selectedPresetPrompt) return;
@@ -1854,6 +1992,11 @@ export function ThreePanelInterface() {
       )}&session_id=${encodeURIComponent(sessionId)}`;
       const res = await fetch(url, { method: "DELETE" });
       if (res.ok) {
+        setSelectedAnalysisFiles((current) => {
+          const next = new Set(current);
+          next.delete(p);
+          return next;
+        });
         await loadWorkspaceTree();
         await loadWorkspaceFiles();
       }
@@ -1918,7 +2061,22 @@ export function ThreePanelInterface() {
       const url = `${API_URLS.WORKSPACE_UPLOAD_TO}?dir=${encodeURIComponent(
         dirPath || ""
       )}&session_id=${encodeURIComponent(sessionId)}`;
-      await fetch(url, { method: "POST", body: form });
+      const response = await fetch(url, { method: "POST", body: form });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      const payload = await response.json();
+      const uploadedPaths = Array.isArray(payload?.files)
+        ? payload.files.map((file: { path?: string }) => file.path).filter(Boolean)
+        : [];
+      if (!dirPath && uploadedPaths.length) {
+        setSelectedAnalysisFiles((current) => {
+          const next = new Set(current);
+          uploadedPaths.forEach((path: string) => next.add(path));
+          return next;
+        });
+        fileSelectionInitializedRef.current = true;
+      }
       await loadWorkspaceTree();
       await loadWorkspaceFiles();
       if (blockedFiles.length) {
@@ -2362,6 +2520,8 @@ export function ThreePanelInterface() {
 
       if (response.ok) {
         setWorkspaceFiles([]);
+        setSelectedAnalysisFiles(new Set());
+        fileSelectionInitializedRef.current = false;
         await loadWorkspaceTree();
         await loadWorkspaceFiles();
         toast({
@@ -3259,6 +3419,8 @@ export function ThreePanelInterface() {
                 isDarkMode={isDarkMode}
                 onEdit={(c) => {
                   setCodeEditorContent(c);
+                  setCodeEditorOriginalCode(c);
+                  setAppliedCodeEdit(null);
                   setSelectedCodeSection(c);
                   setShowCodeEditor(true);
                 }}
@@ -3531,6 +3693,8 @@ export function ThreePanelInterface() {
                         onClick={() => {
                           const code = extractCode(body || "");
                           setCodeEditorContent(code);
+                          setCodeEditorOriginalCode(code);
+                          setAppliedCodeEdit(null);
                           setSelectedCodeSection(body || "");
                           setShowCodeEditor(true);
                         }}
@@ -3871,6 +4035,8 @@ export function ThreePanelInterface() {
                         onClick={() => {
                           const code = extractCode(match.content);
                           setCodeEditorContent(code);
+                          setCodeEditorOriginalCode(code);
+                          setAppliedCodeEdit(null);
                           setSelectedCodeSection(match.content);
                           setShowCodeEditor(true);
                         }}
@@ -4309,13 +4475,29 @@ export function ThreePanelInterface() {
         body: JSON.stringify({
           code: codeEditorContent,
           session_id: sessionId,
+          instruction: appliedCodeEdit?.instruction || "",
+          original_code: appliedCodeEdit?.originalCode || codeEditorOriginalCode,
         }),
       });
 
       if (response.ok) {
         const data = await response.json();
         setCodeExecutionResult(data.result);
-        await loadWorkspaceFiles(); // Refresh file list after execution
+        if (data.trace_content) {
+          setMessages((current) => [
+            ...current,
+            {
+              id: String(data.message_id || `manual-run-${Date.now()}`),
+              sender: "ai",
+              content: String(data.trace_content),
+              timestamp: new Date(),
+            },
+          ]);
+        }
+        setCodeEditorOriginalCode(codeEditorContent);
+        setAppliedCodeEdit(null);
+        await loadWorkspaceFiles();
+        await loadWorkspaceTree();
       } else {
         setCodeExecutionResult("Error: Failed to execute code");
       }
@@ -4417,6 +4599,7 @@ export function ThreePanelInterface() {
       setPendingCodeEdit({
         originalCode: codeEditorContent,
         modifiedCode,
+        instruction,
         diffRows: buildLineDiff(codeEditorContent, modifiedCode) as CodeDiffRow[],
       });
       toastRef.current({
@@ -4442,6 +4625,10 @@ export function ThreePanelInterface() {
     if (!pendingCodeEdit) return;
     setCodeEditorContent(pendingCodeEdit.modifiedCode);
     setSelectedCodeSection(pendingCodeEdit.modifiedCode);
+    setAppliedCodeEdit({
+      originalCode: pendingCodeEdit.originalCode,
+      instruction: pendingCodeEdit.instruction,
+    });
     setPendingCodeEdit(null);
     toastRef.current({
       description: uiLanguage === "zh" ? "修改已应用到编辑器" : "Edit applied to the editor.",
@@ -4483,6 +4670,8 @@ export function ThreePanelInterface() {
                 isDarkMode={isDarkMode}
                 onEdit={(c) => {
                   setCodeEditorContent(c);
+                  setCodeEditorOriginalCode(c);
+                  setAppliedCodeEdit(null);
                   setSelectedCodeSection(c);
                   setShowCodeEditor(true);
                 }}
@@ -5045,6 +5234,7 @@ export function ThreePanelInterface() {
     setIsStopping(false);
     const abortController = new AbortController();
     streamAbortControllerRef.current = abortController;
+    const aiMsgId = `${Date.now()}-${Math.random()}`;
 
     try {
       const response = await fetch(API_URLS.CHAT_COMPLETIONS, {
@@ -5068,6 +5258,8 @@ export function ThreePanelInterface() {
           api_base: llmProvider === "custom" ? customApiBase.trim() : "",
           temperature: normalizedTemperature,
           ui_language: uiLanguage,
+          workspace: Array.from(selectedAnalysisFiles),
+          assistant_message_id: aiMsgId,
           messages: [
             ...(effectiveSystemPrompt
               ? [
@@ -5136,7 +5328,6 @@ export function ThreePanelInterface() {
       }
 
       // 预先插入 AI 消息占位
-      const aiMsgId = `${Date.now()}-${Math.random()}`;
       setStreamingMessageId(aiMsgId);
       setMessages((prev) => [
         ...prev,
@@ -5702,6 +5893,67 @@ export function ThreePanelInterface() {
                           </div>
                         </div>
                       </div>
+                    </div>
+                  </div>
+
+                  <div className="border-y border-gray-200/80 py-3 dark:border-gray-800/80">
+                    <div className="mb-2 flex items-center justify-between gap-3">
+                      <div className="text-xs font-medium text-gray-700 dark:text-gray-300">
+                        {uiLanguage === "zh" ? "分析文件" : "Analysis files"}
+                        <span className="ml-2 text-gray-400">
+                          {selectedAnalysisFiles.size}/{rightPanelSourceFiles.filter((file) => !isGeneratedWorkspaceFile(file)).length}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 px-2 text-xs"
+                          onClick={() => {
+                            setSelectedAnalysisFiles(
+                              new Set(
+                                rightPanelSourceFiles
+                                  .filter((file) => !isGeneratedWorkspaceFile(file))
+                                  .map((file) => file.path)
+                              )
+                            );
+                            fileSelectionInitializedRef.current = true;
+                          }}
+                        >
+                          {uiLanguage === "zh" ? "全选" : "All"}
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 px-2 text-xs"
+                          onClick={() => {
+                            setSelectedAnalysisFiles(new Set());
+                            fileSelectionInitializedRef.current = true;
+                          }}
+                        >
+                          {uiLanguage === "zh" ? "清空" : "Clear"}
+                        </Button>
+                      </div>
+                    </div>
+                    <div className="max-h-32 space-y-1 overflow-y-auto">
+                      {rightPanelSourceFiles
+                        .filter((file) => !isGeneratedWorkspaceFile(file))
+                        .map((file) => (
+                          <label
+                            key={file.path}
+                            className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-xs hover:bg-gray-100 dark:hover:bg-gray-900"
+                          >
+                            <Checkbox
+                              checked={selectedAnalysisFiles.has(file.path)}
+                              onCheckedChange={(checked) =>
+                                toggleAnalysisFile(file.path, checked === true)
+                              }
+                            />
+                            <span className="truncate" title={file.path}>{file.name}</span>
+                          </label>
+                        ))}
                     </div>
                   </div>
 
@@ -6608,10 +6860,12 @@ export function ThreePanelInterface() {
                     size="sm"
                     onClick={() => {
                       setCodeEditorContent("");
+                      setCodeEditorOriginalCode("");
                       setSelectedCodeSection("");
                       setCodeExecutionResult("");
                       setCodeEditInstruction("");
                       setPendingCodeEdit(null);
+                      setAppliedCodeEdit(null);
                       setShowCodeEditor(false);
                     }}
                   >

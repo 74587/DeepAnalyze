@@ -14,12 +14,8 @@ from typing import Any, Iterable
 import httpx
 import openai
 
-from .execution import (
-    build_file_block,
-    collect_artifact_paths,
-    execute_code_safe,
-    snapshot_workspace_files,
-)
+from .execution import build_file_block
+from .execution_service import execute_managed_code
 from .action_protocol import (
     ProtocolValidationError,
     contains_completed_action,
@@ -314,13 +310,22 @@ def _resolve_workspace_selection(
     return resolved_paths
 
 
-def _build_user_prompt(messages: list[dict[str, Any]], workspace: list[str], workspace_dir: str) -> None:
+def _build_user_prompt(
+    messages: list[dict[str, Any]],
+    workspace: list[str],
+    workspace_dir: str,
+    *,
+    use_all_files_when_empty: bool,
+) -> None:
     if not messages or messages[-1].get("role") != "user":
         return
 
     user_message = str(messages[-1].get("content") or "")
     selected_paths = _resolve_workspace_selection(workspace, workspace_dir)
-    file_info = collect_file_info(selected_paths if selected_paths else workspace_dir)
+    file_source: list[Path] | str = selected_paths
+    if not selected_paths and use_all_files_when_empty:
+        file_source = workspace_dir
+    file_info = collect_file_info(file_source)
     if file_info:
         messages[-1]["content"] = f"# Instruction\n{user_message}\n\n# Data\n{file_info}"
     else:
@@ -360,7 +365,7 @@ def _save_answer_markdown_report(
 
 def bot_stream(
     messages: list[dict[str, Any]],
-    workspace: list[str],
+    workspace: list[str] | None,
     session_id: str = "default",
     runtime_config: ChatRuntimeConfig | None = None,
 ):
@@ -376,13 +381,17 @@ def bot_stream(
         conversation = deepcopy(messages or [])
         workspace_paths = list(workspace or [])
         workspace_dir = get_session_workspace(session_id)
-        generated_dir = str(Path(workspace_dir) / "generated")
-        Path(generated_dir).mkdir(parents=True, exist_ok=True)
+        Path(workspace_dir, "generated").mkdir(parents=True, exist_ok=True)
 
         if conversation and conversation[0].get("role") == "assistant":
             conversation = conversation[1:]
 
-        _build_user_prompt(conversation, workspace_paths, workspace_dir)
+        _build_user_prompt(
+            conversation,
+            workspace_paths,
+            workspace_dir,
+            use_all_files_when_empty=workspace is None,
+        )
         initial_workspace = {
             path.resolve() for path in Path(workspace_dir).rglob("*") if path.is_file()
         }
@@ -481,32 +490,21 @@ def bot_stream(
                 yield _execution_status_block("Protocol Error", "empty executable code")
                 break
 
-            before_state = snapshot_workspace_files(workspace_dir)
             remaining_seconds = max(
                 1,
                 settings.chat_max_duration_sec - int(time.monotonic() - started_at),
             )
-            exe_output = execute_code_safe(
+            outcome = execute_managed_code(
                 code_str,
-                workspace_dir,
                 session_id,
-                min(settings.execution_timeout_sec, remaining_seconds),
-                stop_event,
+                source="agent",
+                timeout_sec=min(settings.execution_timeout_sec, remaining_seconds),
+                cancel_event=stop_event,
             )
-            after_state = snapshot_workspace_files(workspace_dir)
-            artifact_paths = collect_artifact_paths(
-                before_state,
-                after_state,
-                generated_dir,
-                session_id,
-            )
-
-            exe_str = f"\n<Execute>\n```\n{exe_output}\n```\n</Execute>\n"
-            file_block = build_file_block(artifact_paths, workspace_dir, session_id)
-            yield exe_str + file_block
+            yield outcome.execution_content
 
             conversation.append(
-                _build_execution_feedback_message(runtime_config, exe_output)
+                _build_execution_feedback_message(runtime_config, outcome.result)
             )
             if stop_event.is_set():
                 break

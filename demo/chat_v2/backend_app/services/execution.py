@@ -11,7 +11,12 @@ import time
 from pathlib import Path
 
 from .docker_executor import ensure_execution_backend_ready, execute_python_in_docker
-from .workspace import build_download_url, register_generated_paths, uniquify_path
+from .workspace import (
+    build_download_url,
+    is_internal_workspace_path,
+    register_generated_paths,
+    uniquify_path,
+)
 from ..settings import IMAGE_EXTENSIONS, settings
 
 
@@ -133,7 +138,7 @@ def snapshot_workspace_files(workspace_dir: str) -> dict[Path, tuple[int, int]]:
         return {
             path.resolve(): (path.stat().st_size, path.stat().st_mtime_ns)
             for path in Path(workspace_dir).rglob("*")
-            if path.is_file()
+            if path.is_file() and not is_internal_workspace_path(path, Path(workspace_dir))
         }
     except Exception:
         return {}

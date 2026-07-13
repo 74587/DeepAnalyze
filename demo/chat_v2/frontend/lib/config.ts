@@ -20,6 +20,9 @@ export const API_CONFIG = {
     EXECUTE_CODE: "/execute",
     EDIT_CODE: "/code/edit",
     EXPORT_REPORT: "/export/report",
+    SESSION_STATE: "/session/state",
+    SESSION_MESSAGES: "/session/messages",
+    SESSION_TASK: "/session/task",
   },
 };
 
@@ -70,4 +73,7 @@ export const API_URLS = {
   EXPORT_REPORT: buildApiUrl(API_CONFIG.ENDPOINTS.EXPORT_REPORT),
   CHAT_COMPLETIONS: buildApiUrl(API_CONFIG.ENDPOINTS.CHAT_COMPLETIONS),
   CHAT_STOP: buildApiUrl(API_CONFIG.ENDPOINTS.CHAT_STOP),
+  SESSION_STATE: buildApiUrl(API_CONFIG.ENDPOINTS.SESSION_STATE),
+  SESSION_MESSAGES: buildApiUrl(API_CONFIG.ENDPOINTS.SESSION_MESSAGES),
+  SESSION_TASK: buildApiUrl(API_CONFIG.ENDPOINTS.SESSION_TASK),
 };

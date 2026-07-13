@@ -13,6 +13,9 @@
 - 支持导出 Markdown 和 PDF 报告
 - 支持中英文界面切换
 - 支持 local / docker 两种代码执行模式
+- 支持明确选择每次分析使用的 workspace 文件
+- 支持按 session 恢复任务配置、聊天轨迹和执行历史
+- 自动与手动代码执行都会保存脚本版本、diff、输出和关联产物
 
 ## 运行前准备
 
@@ -98,6 +101,12 @@ docker build -t deepanalyze-chat-exec:latest -f Dockerfile.exec .
 - 模型输出必须是完整的结构化动作，且只能包含一个位于末尾的 `<Code>` 或 `<Answer>`；不完整的代码不会执行。
 - 同一个 session 同时只允许一个分析或手动执行任务。
 - 分别限制 Agent 轮次、代码执行次数、响应长度、总时长和单次代码时长；`/chat/stop` 也会取消正在运行的代码。
+
+## Session 状态与统一执行
+
+每个 session 的状态保存在执行 workspace 之外的 `.session_state/<session>/session.json`，不会挂载进沙箱容器，也不会由 workspace API 暴露；清空用户 workspace 文件时仍会保留会话状态。浏览器优先从服务端恢复状态，仅将按 session 隔离的 localStorage 缓存作为离线回退。
+
+Agent 自动生成的 `<Code>` 与代码工作台手动复跑统一经过同一个执行服务。每次运行都会在 `generated/code/` 保存版本化脚本、登记新增或修改的 artifacts、记录自然语言修改指令与统一 diff，并生成可进入主聊天轨迹和报告导出的 Code/Execute/File 内容。
 
 ## 如何运行
 

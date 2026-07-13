@@ -14,6 +14,9 @@
 - Switch between Chinese and English UI
 - Run code either locally or inside Docker
 - Choose model provider: Local, HeyWhale API, or Custom OpenAI-compatible API
+- Select the exact workspace files included in each analysis task
+- Restore task configuration, chat traces, and execution history per session
+- Persist every agent/manual code run with its script, diff, output, and artifacts
 
 ## Model Provider Settings
 
@@ -122,6 +125,18 @@ The backend validates the image during startup. Resource limits can be adjusted 
 - Each session permits only one active analysis or manual execution.
 - Agent rounds, code executions, response size, total duration, and individual code runs
   have independent limits. `/chat/stop` also cancels an active code execution.
+
+## Session State And Managed Execution
+
+Session state is stored under `.session_state/<session>/session.json` beside, not inside,
+the execution workspaces. It is never mounted into sandbox containers or exposed by
+workspace APIs, and it survives clearing user workspace files. The browser restores this
+server state first and uses a session-scoped local cache only as an offline fallback.
+
+Both autonomous `<Code>` actions and Code Lab reruns use the same managed execution service.
+Each run saves a versioned script under `generated/code/`, registers changed artifacts,
+records the edit instruction and unified diff, and emits a Code/Execute/File trace that is
+included in later report exports.
 
 ## Run
 

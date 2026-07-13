@@ -20,6 +20,7 @@ from ..settings import PREVIEWABLE_EXTENSIONS, settings
 
 
 GENERATED_INDEX_FILENAME = ".deepanalyze_generated.json"
+INTERNAL_WORKSPACE_DIRNAME = ".deepanalyze"
 SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,95}$")
 WINDOWS_RESERVED_NAMES = {
     "CON",
@@ -376,7 +377,7 @@ def preview_workspace_file(
     table_name: str = "",
     sheet_name: str = "",
 ) -> dict:
-    file_path = resolve_workspace_path(session_id, relative_path)
+    file_path = resolve_user_workspace_path(session_id, relative_path)
     if not file_path.exists() or not file_path.is_file():
         raise HTTPException(status_code=404, detail="File not found")
 
@@ -498,7 +499,7 @@ def get_workspace_file_response(
     *,
     download: bool = False,
 ) -> FileResponse:
-    file_path = resolve_workspace_path(session_id, relative_path)
+    file_path = resolve_user_workspace_path(session_id, relative_path)
     if not file_path.exists() or not file_path.is_file():
         raise HTTPException(status_code=404, detail="File not found")
 
@@ -548,8 +549,25 @@ def resolve_workspace_path(session_id: str, relative_path: str = "") -> Path:
     return target
 
 
-def _is_internal_workspace_file(path: Path) -> bool:
-    return path.name == GENERATED_INDEX_FILENAME
+def resolve_user_workspace_path(session_id: str, relative_path: str = "") -> Path:
+    workspace_root = resolve_workspace_root(session_id)
+    target = resolve_workspace_path(session_id, relative_path)
+    if target != workspace_root and is_internal_workspace_path(target, workspace_root):
+        raise HTTPException(status_code=400, detail="Internal workspace path is not accessible")
+    return target
+
+
+def is_internal_workspace_path(path: Path, workspace_root: Path | None = None) -> bool:
+    candidate = path
+    if workspace_root is not None:
+        try:
+            candidate = path.resolve().relative_to(workspace_root.resolve())
+        except (OSError, ValueError):
+            return True
+    return (
+        path.name == GENERATED_INDEX_FILENAME
+        or INTERNAL_WORKSPACE_DIRNAME in candidate.parts
+    )
 
 
 def _is_generated_workspace_path(rel_path: str, generated_index: set[str]) -> bool:
@@ -564,7 +582,7 @@ def list_workspace_files(session_id: str) -> list[dict]:
     all_files = [
         path
         for path in workspace_root.rglob("*")
-        if path.is_file() and not _is_internal_workspace_file(path)
+        if path.is_file() and not is_internal_workspace_path(path, workspace_root)
     ]
     for file_path in sorted(all_files, key=lambda path: _rel_path(path, workspace_root).lower()):
         rel = _rel_path(file_path, workspace_root)
@@ -602,7 +620,7 @@ def download_generated_bundle(session_id: str, category: str = "all") -> FileRes
     files = [
         path
         for path in generated_root.rglob("*")
-        if path.is_file() and not _is_internal_workspace_file(path)
+        if path.is_file() and not is_internal_workspace_path(path, workspace_root)
     ]
     if normalized_category != "all":
         files = [
@@ -671,7 +689,7 @@ def build_tree(
         node["children"] = [
             build_tree(child, root, session_id, generated_index)
             for child in sorted(path.iterdir(), key=sort_key)
-            if not child.name.startswith(".") and not _is_internal_workspace_file(child)
+            if not child.name.startswith(".") and not is_internal_workspace_path(child, root)
         ]
         node["is_generated"] = node["path"] == "generated" or node["path"].startswith("generated/")
         return node
@@ -688,7 +706,7 @@ def build_tree(
 
 
 def delete_workspace_file(session_id: str, relative_path: str) -> dict:
-    target = resolve_workspace_path(session_id, relative_path)
+    target = resolve_user_workspace_path(session_id, relative_path)
     if not target.exists():
         raise HTTPException(status_code=404, detail="Not found")
     if target.is_dir():
@@ -698,11 +716,11 @@ def delete_workspace_file(session_id: str, relative_path: str) -> dict:
 
 
 def move_workspace_path(session_id: str, src: str, dst_dir: str = "") -> dict:
-    source = resolve_workspace_path(session_id, src)
+    source = resolve_user_workspace_path(session_id, src)
     if not source.exists():
         raise HTTPException(status_code=404, detail="Source not found")
 
-    target_dir = resolve_workspace_path(session_id, dst_dir)
+    target_dir = resolve_user_workspace_path(session_id, dst_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
     target = uniquify_path(target_dir / source.name)
     shutil.move(str(source), str(target))
@@ -714,7 +732,7 @@ def move_workspace_path(session_id: str, src: str, dst_dir: str = "") -> dict:
 
 def delete_workspace_dir(session_id: str, relative_path: str, recursive: bool = True) -> dict:
     workspace_root = resolve_workspace_root(session_id)
-    target = resolve_workspace_path(session_id, relative_path)
+    target = resolve_user_workspace_path(session_id, relative_path)
     if target == workspace_root:
         raise HTTPException(status_code=400, detail="Cannot delete workspace root")
     if not target.exists():
@@ -749,7 +767,11 @@ async def _save_uploads(
     files: Iterable[UploadFile],
 ) -> tuple[list[dict], list[str]]:
     def workspace_usage() -> tuple[int, int]:
-        existing_files = [path for path in workspace_root.rglob("*") if path.is_file()]
+        existing_files = [
+            path
+            for path in workspace_root.rglob("*")
+            if path.is_file() and not is_internal_workspace_path(path, workspace_root)
+        ]
         return len(existing_files), sum(path.stat().st_size for path in existing_files)
 
     def safe_upload_filename(raw_name: str | None) -> str:
@@ -829,7 +851,7 @@ async def upload_files_to_workspace(session_id: str, files: Iterable[UploadFile]
 
 async def upload_files_to_dir(session_id: str, directory: str, files: Iterable[UploadFile]) -> dict:
     workspace_root = resolve_workspace_root(session_id)
-    target_dir = resolve_workspace_path(session_id, directory)
+    target_dir = resolve_user_workspace_path(session_id, directory)
     target_dir.mkdir(parents=True, exist_ok=True)
     saved, rejected = await _save_uploads(workspace_root, target_dir, files)
     return {"message": f"uploaded {len(saved)}", "files": saved, "rejected": rejected}
@@ -837,7 +859,11 @@ async def upload_files_to_dir(session_id: str, directory: str, files: Iterable[U
 
 def clear_workspace(session_id: str) -> dict:
     workspace_root = resolve_workspace_root(session_id)
-    if workspace_root.exists():
-        shutil.rmtree(workspace_root)
-    workspace_root.mkdir(parents=True, exist_ok=True)
+    for child in workspace_root.iterdir():
+        if child.name == INTERNAL_WORKSPACE_DIRNAME:
+            continue
+        if child.is_dir():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
     return {"message": "Workspace cleared successfully"}
