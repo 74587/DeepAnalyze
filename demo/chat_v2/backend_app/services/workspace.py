@@ -6,7 +6,7 @@ import shutil
 import sqlite3
 import tempfile
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Iterable, Sequence
 from urllib.parse import quote, urlencode
 
@@ -20,11 +20,40 @@ from ..settings import PREVIEWABLE_EXTENSIONS, settings
 
 
 GENERATED_INDEX_FILENAME = ".deepanalyze_generated.json"
+SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,95}$")
+WINDOWS_RESERVED_NAMES = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{index}" for index in range(1, 10)),
+    *(f"LPT{index}" for index in range(1, 10)),
+}
+
+
+def validate_session_id(session_id: str | None) -> str:
+    normalized = str(session_id or "default").strip() or "default"
+    if (
+        normalized in {".", ".."}
+        or not SESSION_ID_PATTERN.fullmatch(normalized)
+        or normalized.endswith(".")
+    ):
+        raise HTTPException(status_code=400, detail="Invalid session_id")
+    return normalized
+
+
+def _workspace_base() -> Path:
+    base = Path(settings.workspace_base_dir).resolve()
+    base.mkdir(parents=True, exist_ok=True)
+    return base
 
 
 def get_session_workspace(session_id: str) -> str:
-    safe_session_id = (session_id or "default").strip() or "default"
-    session_dir = Path(settings.workspace_base_dir) / safe_session_id
+    safe_session_id = validate_session_id(session_id)
+    workspace_base = _workspace_base()
+    session_dir = (workspace_base / safe_session_id).resolve()
+    if session_dir.parent != workspace_base:
+        raise HTTPException(status_code=400, detail="Invalid session workspace")
     session_dir.mkdir(parents=True, exist_ok=True)
     return str(session_dir)
 
@@ -62,7 +91,13 @@ def _generated_index_path(workspace_root: Path) -> Path:
 
 
 def _normalize_generated_rel_path(path: str) -> str:
-    return str(path or "").replace("\\", "/").lstrip("./")
+    raw = str(path or "").replace("\\", "/").strip()
+    if not raw or raw.startswith("/"):
+        return ""
+    candidate = PurePosixPath(raw)
+    if any(part in {"", ".", ".."} for part in candidate.parts):
+        return ""
+    return candidate.as_posix()
 
 
 def load_generated_index(session_id: str) -> set[str]:
@@ -713,22 +748,69 @@ async def _save_uploads(
     target_dir: Path,
     files: Iterable[UploadFile],
 ) -> tuple[list[dict], list[str]]:
+    def workspace_usage() -> tuple[int, int]:
+        existing_files = [path for path in workspace_root.rglob("*") if path.is_file()]
+        return len(existing_files), sum(path.stat().st_size for path in existing_files)
+
+    def safe_upload_filename(raw_name: str | None) -> str:
+        raw = str(raw_name or "untitled").strip()
+        normalized = raw.replace("\\", "/")
+        name = PurePosixPath(normalized).name
+        stem_upper = Path(name).stem.upper()
+        if (
+            not name
+            or name in {".", ".."}
+            or normalized != name
+            or name.endswith((" ", "."))
+            or stem_upper in WINDOWS_RESERVED_NAMES
+            or re.search(r'[<>:"/\\|?*\x00-\x1f]', name)
+        ):
+            raise HTTPException(status_code=400, detail="Invalid upload filename")
+        return name
+
     saved: list[dict] = []
     rejected: list[str] = []
+    file_count, workspace_bytes = workspace_usage()
     for file in files:
-        filename = file.filename or "untitled"
+        filename = safe_upload_filename(file.filename)
         ext = Path(filename).suffix.lower()
         if ext in BLOCKED_UPLOAD_EXTENSIONS:
             rejected.append(filename)
             continue
+        if file_count >= settings.workspace_max_files:
+            raise HTTPException(status_code=413, detail="Workspace file count limit exceeded")
+
         dst = uniquify_path(target_dir / filename)
-        content = await file.read()
-        with open(dst, "wb") as buffer:
-            buffer.write(content)
+        temp_file = tempfile.NamedTemporaryFile(
+            prefix=".deepanalyze-upload-",
+            suffix=".tmp",
+            dir=target_dir,
+            delete=False,
+        )
+        temp_path = Path(temp_file.name)
+        uploaded_bytes = 0
+        try:
+            with temp_file:
+                while True:
+                    chunk = await file.read(settings.upload_chunk_bytes)
+                    if not chunk:
+                        break
+                    uploaded_bytes += len(chunk)
+                    if uploaded_bytes > settings.upload_max_file_bytes:
+                        raise HTTPException(status_code=413, detail="Upload file size limit exceeded")
+                    if workspace_bytes + uploaded_bytes > settings.workspace_max_bytes:
+                        raise HTTPException(status_code=413, detail="Workspace size limit exceeded")
+                    temp_file.write(chunk)
+            temp_path.replace(dst)
+        finally:
+            temp_path.unlink(missing_ok=True)
+
+        file_count += 1
+        workspace_bytes += uploaded_bytes
         saved.append(
             {
                 "name": dst.name,
-                "size": len(content),
+                "size": uploaded_bytes,
                 "path": dst.relative_to(workspace_root).as_posix(),
             }
         )

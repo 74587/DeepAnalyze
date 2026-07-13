@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import re
+import shutil
 import subprocess
 import threading
 import time
@@ -8,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from ..settings import settings
+from .workspace import resolve_workspace_root, validate_session_id
 
 
 MANAGED_LABEL_KEY = "deepanalyze.managed"
@@ -44,12 +48,6 @@ def _run_docker_command(
     )
 
 
-def _workspace_root() -> Path:
-    root = Path(settings.workspace_base_dir).resolve()
-    root.mkdir(parents=True, exist_ok=True)
-    return root
-
-
 def _keepalive_command() -> list[str]:
     return ["sh", "-c", "while true; do sleep 3600; done"]
 
@@ -61,8 +59,10 @@ def _sanitize_session_id(session_id: str) -> str:
 
 
 def _container_name_for_session(session_id: str) -> str:
+    validated_session_id = validate_session_id(session_id)
     prefix = settings.docker_container_name.strip() or "deepanalyze-chat-exec"
-    suffix = _sanitize_session_id(session_id)
+    digest = hashlib.sha256(validated_session_id.encode("utf-8")).hexdigest()[:12]
+    suffix = f"{_sanitize_session_id(validated_session_id)[:32]}-{digest}"
     return f"{prefix}-{suffix}"[:120]
 
 
@@ -89,6 +89,34 @@ def _image_exists(image_name: str) -> bool:
         timeout=20,
     )
     return completed.returncode == 0
+
+
+def _container_matches_session(
+    container_name: str,
+    session_id: str,
+    session_workspace: Path,
+) -> bool:
+    completed = _run_docker_command(
+        ["inspect", container_name],
+        check=False,
+        timeout=20,
+    )
+    if completed.returncode != 0:
+        return False
+    try:
+        payload = json.loads(completed.stdout or "[]")[0]
+        labels = payload.get("Config", {}).get("Labels", {}) or {}
+        mounts = payload.get("Mounts", []) or []
+    except (IndexError, TypeError, ValueError):
+        return False
+    if labels.get(MANAGED_LABEL_KEY) != "true" or labels.get(SESSION_LABEL_KEY) != session_id:
+        return False
+    expected_source = session_workspace.resolve()
+    return any(
+        mount.get("Destination") == settings.docker_workspace_dir
+        and Path(str(mount.get("Source") or "")).resolve() == expected_source
+        for mount in mounts
+    )
 
 
 def _touch_container(session_id: str, container_name: str, *, created_by_app: bool, started_by_app: bool) -> None:
@@ -140,27 +168,36 @@ def ensure_execution_backend_ready(session_id: str | None = None) -> None:
     if not settings.use_docker_execution or not session_id:
         return
 
-    workspace_root = _workspace_root()
+    validated_session_id = validate_session_id(session_id)
+    session_workspace = resolve_workspace_root(validated_session_id)
     container_name = _container_name_for_session(session_id)
 
     with _DOCKER_LOCK:
         _cleanup_idle_session_containers()
 
         if _container_is_running(container_name):
+            if not _container_matches_session(
+                container_name, validated_session_id, session_workspace
+            ):
+                raise RuntimeError("Existing execution container failed isolation validation")
             _touch_container(
-                session_id,
+                validated_session_id,
                 container_name,
-                created_by_app=False,
+                created_by_app=True,
                 started_by_app=False,
             )
             return
 
         if _container_exists(container_name):
+            if not _container_matches_session(
+                container_name, validated_session_id, session_workspace
+            ):
+                raise RuntimeError("Existing execution container failed isolation validation")
             _run_docker_command(["start", container_name])
             _touch_container(
-                session_id,
+                validated_session_id,
                 container_name,
-                created_by_app=False,
+                created_by_app=True,
                 started_by_app=True,
             )
             return
@@ -171,8 +208,7 @@ def ensure_execution_backend_ready(session_id: str | None = None) -> None:
                 "`docker build -t deepanalyze-chat-exec:latest -f Dockerfile.exec .`"
             )
 
-        _run_docker_command(
-            [
+        docker_args = [
                 "run",
                 "-d",
                 "--name",
@@ -180,17 +216,36 @@ def ensure_execution_backend_ready(session_id: str | None = None) -> None:
                 "--label",
                 f"{MANAGED_LABEL_KEY}=true",
                 "--label",
-                f"{SESSION_LABEL_KEY}={session_id}",
+                f"{SESSION_LABEL_KEY}={validated_session_id}",
+                "--cap-drop",
+                "ALL",
+                "--security-opt",
+                "no-new-privileges",
+                "--network",
+                settings.docker_network_mode or "none",
+                "--memory",
+                settings.docker_memory,
+                "--cpus",
+                str(settings.docker_cpus),
+                "--pids-limit",
+                str(settings.docker_pids_limit),
                 "-v",
-                f"{workspace_root}:{settings.docker_workspace_dir}",
+                f"{session_workspace}:{settings.docker_workspace_dir}:rw",
                 "-w",
                 settings.docker_workspace_dir,
-                settings.docker_image,
-                *_keepalive_command(),
-            ]
-        )
+        ]
+        if settings.docker_user:
+            docker_args.extend(["--user", settings.docker_user])
+        if settings.docker_read_only:
+            docker_args.append("--read-only")
+        if settings.docker_tmpfs_size:
+            docker_args.extend(
+                ["--tmpfs", f"/tmp:rw,nosuid,nodev,size={settings.docker_tmpfs_size}"]
+            )
+        docker_args.extend([settings.docker_image, *_keepalive_command()])
+        _run_docker_command(docker_args)
         _touch_container(
-            session_id,
+            validated_session_id,
             container_name,
             created_by_app=True,
             started_by_app=True,
@@ -207,8 +262,8 @@ def shutdown_execution_backend() -> None:
             _SESSION_CONTAINERS.pop(session_id, None)
 
 
-def _resolve_container_workdir(workspace_dir: str) -> str:
-    workspace_root = _workspace_root()
+def _resolve_container_workdir(workspace_dir: str, session_id: str) -> str:
+    workspace_root = resolve_workspace_root(session_id)
     exec_dir = Path(workspace_dir).resolve()
     relative_dir = exec_dir.relative_to(workspace_root)
     if str(relative_dir) in {"", "."}:
@@ -221,28 +276,58 @@ def execute_python_in_docker(
     workspace_dir: str,
     timeout_sec: int,
     session_id: str,
+    cancel_event: threading.Event | None = None,
 ) -> str:
     ensure_execution_backend_ready(session_id)
     container_name = _container_name_for_session(session_id)
-    container_workdir = _resolve_container_workdir(workspace_dir)
+    container_workdir = _resolve_container_workdir(workspace_dir, session_id)
     script_name = Path(script_path).name
 
     try:
-        completed = _run_docker_command(
+        process = subprocess.Popen(
             [
+                "docker",
                 "exec",
                 "-e",
                 "MPLBACKEND=Agg",
                 "-e",
+                "MPLCONFIGDIR=/tmp/matplotlib",
+                "-e",
                 "QT_QPA_PLATFORM=offscreen",
+                "-e",
+                "HOME=/tmp",
                 "-w",
                 container_workdir,
                 container_name,
                 settings.docker_python_bin,
                 script_name,
             ],
-            timeout=timeout_sec,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
         )
+        deadline = time.monotonic() + timeout_sec
+        while True:
+            try:
+                stdout, stderr = process.communicate(timeout=0.2)
+                break
+            except subprocess.TimeoutExpired:
+                cancelled = cancel_event is not None and cancel_event.is_set()
+                timed_out = time.monotonic() >= deadline
+                if not cancelled and not timed_out:
+                    continue
+                process.terminate()
+                _run_docker_command(["stop", "-t", "1", container_name], check=False, timeout=10)
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                if cancelled:
+                    return "[Cancelled]: execution stopped by user"
+                return f"[Timeout]: execution exceeded {timeout_sec} seconds"
+
         with _DOCKER_LOCK:
             _touch_container(
                 session_id,
@@ -250,15 +335,32 @@ def execute_python_in_docker(
                 created_by_app=False,
                 started_by_app=False,
             )
-        return (completed.stdout or "") + (completed.stderr or "")
-    except subprocess.TimeoutExpired:
-        return f"[Timeout]: execution exceeded {timeout_sec} seconds"
-    except subprocess.CalledProcessError as exc:
-        stdout = (exc.stdout or "").strip()
-        stderr = (exc.stderr or "").strip()
-        details = "\n".join(part for part in [stdout, stderr] if part).strip()
-        if details:
-            return f"[Error]: docker exec failed\n{details}"
-        return f"[Error]: docker exec failed with exit code {exc.returncode}"
+        output = (stdout or "") + (stderr or "")
+        if process.returncode:
+            details = output.strip()
+            suffix = f"\n{details}" if details else ""
+            return f"[Error]: docker exec failed with exit code {process.returncode}{suffix}"
+        return output
     except Exception as exc:
         return f"[Error]: {exc}"
+
+
+def validate_execution_backend_configuration() -> None:
+    execution_mode = settings.execution_mode.strip().lower()
+    if execution_mode not in {"docker", "local"}:
+        raise RuntimeError(f"Unsupported execution mode: {settings.execution_mode!r}")
+    if not settings.use_docker_execution:
+        if not settings.allow_unsafe_local_execution:
+            raise RuntimeError(
+                "Local execution is disabled. Set DEEPANALYZE_EXECUTION_MODE=docker "
+                "or explicitly set DEEPANALYZE_ALLOW_UNSAFE_LOCAL_EXECUTION=true "
+                "for trusted development."
+            )
+        return
+    if shutil.which("docker") is None:
+        raise RuntimeError("Docker CLI was not found")
+    if not _image_exists(settings.docker_image):
+        raise RuntimeError(
+            f"Docker image {settings.docker_image!r} was not found. "
+            "Build it with `docker build -t deepanalyze-chat-exec:latest -f Dockerfile.exec .`."
+        )

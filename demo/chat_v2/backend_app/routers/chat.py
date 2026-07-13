@@ -6,9 +6,16 @@ from fastapi import APIRouter, Body, HTTPException
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 
-from ..services.chat import bot_stream, build_chat_runtime_config, request_stop
+from ..services.chat import (
+    bot_stream,
+    build_chat_runtime_config,
+    get_session_stop_event,
+    release_session_run,
+    request_stop,
+    try_acquire_session_run,
+)
 from ..services.execution import execute_code_safe
-from ..services.workspace import get_session_workspace
+from ..services.workspace import get_session_workspace, validate_session_id
 from ..settings import settings
 
 
@@ -28,12 +35,25 @@ async def execute_code_api(request: dict):
             "message": "Code execution failed",
         }
 
+    session_lock = try_acquire_session_run(session_id)
+    if session_lock is None:
+        raise HTTPException(status_code=409, detail="Session already has an active execution")
+    stop_event = get_session_stop_event(session_id)
+    stop_event.clear()
     try:
-        result = await run_in_threadpool(execute_code_safe, code, workspace_dir, session_id)
+        result = await run_in_threadpool(
+            execute_code_safe,
+            code,
+            workspace_dir,
+            session_id,
+            None,
+            stop_event,
+        )
+        success = not result.startswith(("[Error]", "[Timeout]", "[Cancelled]"))
         return {
-            "success": True,
+            "success": success,
             "result": result,
-            "message": "Code executed successfully",
+            "message": "Code executed successfully" if success else "Code execution failed",
         }
     except Exception as exc:
         return {
@@ -41,13 +61,15 @@ async def execute_code_api(request: dict):
             "result": f"Error: {exc}",
             "message": "Code execution failed",
         }
+    finally:
+        release_session_run(session_id, session_lock)
 
 
 @router.post("/chat/completions")
 async def chat(body: dict = Body(...)):
     messages = body.get("messages", [])
     workspace = body.get("workspace", [])
-    session_id = body.get("session_id", "default")
+    session_id = validate_session_id(body.get("session_id", "default"))
     try:
         runtime_config = build_chat_runtime_config(body)
     except ValueError as exc:

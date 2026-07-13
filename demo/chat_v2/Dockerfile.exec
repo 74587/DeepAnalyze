@@ -72,6 +72,13 @@ PY
 
 RUN fc-cache -f
 
+RUN mkdir -p /workspace && \
+    groupadd --gid 1000 deepanalyze && \
+    useradd --uid 1000 --gid 1000 --create-home deepanalyze && \
+    chown -R deepanalyze:deepanalyze /workspace
+
 WORKDIR /workspace
+
+USER deepanalyze
 
 CMD ["sh", "-c", "while true; do sleep 3600; done"]

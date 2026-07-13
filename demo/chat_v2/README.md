@@ -77,15 +77,20 @@ Copy-Item .env.example .env
 
 ### Local mode
 
-Recommended as the default if the local machine already has the required Python data-analysis dependencies.
+Local execution is intended only for trusted development environments. It runs generated
+Python directly on the host and is disabled unless the risk is explicitly accepted:
 
 ```env
 DEEPANALYZE_EXECUTION_MODE=local
+DEEPANALYZE_ALLOW_UNSAFE_LOCAL_EXECUTION=true
 ```
 
 ### Docker mode
 
-Use this if you want an isolated execution environment.
+Docker is the default and required mode for sandboxed execution. Each session receives a
+separate container that mounts only that session's workspace. Network access is disabled
+by default, and memory, CPU, PID, read-only filesystem, non-root user, and execution-time
+limits are applied from `.env`.
 
 ```env
 DEEPANALYZE_EXECUTION_MODE=docker
@@ -103,6 +108,20 @@ Example:
 cd demo/chat_v2
 docker build -t deepanalyze-chat-exec:latest -f Dockerfile.exec .
 ```
+
+The backend validates the image during startup. Resource limits can be adjusted with
+`DEEPANALYZE_DOCKER_MEMORY`, `DEEPANALYZE_DOCKER_CPUS`,
+`DEEPANALYZE_DOCKER_PIDS_LIMIT`, and `DEEPANALYZE_DOCKER_NETWORK_MODE`.
+
+## Safety And Agent Budgets
+
+- Session identifiers and all workspace paths are validated against the workspace root.
+- Uploads are streamed and constrained by per-file, per-session size, and file-count limits.
+- Model output must contain complete structured actions and exactly one terminal
+  `<Code>` or `<Answer>` block. Incomplete code is never executed.
+- Each session permits only one active analysis or manual execution.
+- Agent rounds, code executions, response size, total duration, and individual code runs
+  have independent limits. `/chat/stop` also cancels an active code execution.
 
 ## Run
 

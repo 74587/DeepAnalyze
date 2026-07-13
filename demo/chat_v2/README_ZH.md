@@ -61,15 +61,16 @@ Copy-Item .env.example .env
 
 ### local 模式
 
-这是默认推荐模式，适合本机已经具备 Python 数据分析依赖的场景：
+local 模式仅用于可信的开发环境。它会在宿主机直接运行生成的 Python 代码，默认禁用，必须显式接受风险：
 
 ```env
 DEEPANALYZE_EXECUTION_MODE=local
+DEEPANALYZE_ALLOW_UNSAFE_LOCAL_EXECUTION=true
 ```
 
 ### docker 模式
 
-适合希望隔离执行环境的场景：
+Docker 是默认且满足沙箱隔离要求的执行模式。每个 session 使用独立容器，且只挂载该 session 的 workspace。默认关闭网络，并通过 `.env` 限制内存、CPU、PID、只读容器文件系统、非 root 用户和执行时间：
 
 ```env
 DEEPANALYZE_EXECUTION_MODE=docker
@@ -87,6 +88,16 @@ DEEPANALYZE_EXECUTION_MODE=docker
 cd demo/chat_v2
 docker build -t deepanalyze-chat-exec:latest -f Dockerfile.exec .
 ```
+
+后端会在启动时检查 Docker CLI 和目标镜像。可以通过 `DEEPANALYZE_DOCKER_MEMORY`、`DEEPANALYZE_DOCKER_CPUS`、`DEEPANALYZE_DOCKER_PIDS_LIMIT` 和 `DEEPANALYZE_DOCKER_NETWORK_MODE` 调整资源限制。
+
+## 安全边界与 Agent 预算
+
+- session ID 和所有 workspace 路径都会校验，不能逃逸到 workspace 根目录之外。
+- 上传采用分块写入，并限制单文件大小、session 总容量和文件数量。
+- 模型输出必须是完整的结构化动作，且只能包含一个位于末尾的 `<Code>` 或 `<Answer>`；不完整的代码不会执行。
+- 同一个 session 同时只允许一个分析或手动执行任务。
+- 分别限制 Agent 轮次、代码执行次数、响应长度、总时长和单次代码时长；`/chat/stop` 也会取消正在运行的代码。
 
 ## 如何运行
 

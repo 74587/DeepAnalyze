@@ -9,12 +9,15 @@ from .routers.chat import router as chat_router
 from .routers.code_editing import router as code_editing_router
 from .routers.export import router as export_router
 from .routers.workspace import router as workspace_router
-from .services.docker_executor import ensure_execution_backend_ready, shutdown_execution_backend
+from .services.docker_executor import (
+    shutdown_execution_backend,
+    validate_execution_backend_configuration,
+)
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    ensure_execution_backend_ready()
+    validate_execution_backend_configuration()
     try:
         yield
     finally:

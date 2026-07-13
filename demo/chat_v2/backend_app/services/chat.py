@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import threading
+import time
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
@@ -18,31 +20,36 @@ from .execution import (
     execute_code_safe,
     snapshot_workspace_files,
 )
+from .action_protocol import (
+    ProtocolValidationError,
+    contains_completed_action,
+    validate_model_actions,
+)
 from .workspace import (
     collect_file_info,
     get_session_workspace,
     register_generated_paths,
+    resolve_workspace_path,
     uniquify_path,
+    validate_session_id,
 )
 from ..settings import CHINESE_MATPLOTLIB_BOOTSTRAP, settings
 
 
 client = openai.OpenAI(base_url=settings.api_base, api_key="dummy")
+logger = logging.getLogger(__name__)
 _STOP_EVENTS: dict[str, threading.Event] = {}
 _STOP_EVENTS_LOCK = threading.Lock()
+_SESSION_RUN_LOCKS: dict[str, threading.Lock] = {}
+_SESSION_RUN_LOCKS_LOCK = threading.Lock()
 HEYWHALE_API_BASE = (
     "https://www.heywhale.com/api/model/services/691d42c36c6dda33df0bf645/app/v1"
 )
 HEYWHALE_BACKUP_CHAT_COMPLETIONS_URL = (
     "https://www.heywhale.com/api/model/services/69b7c9d028cbfe8349df5924/app/v1/chat/completions"
 )
-REMOTE_STOP_SEQUENCES = ["</Code>", "</Answer>"]
 EXECUTE_RESULT_PREFIX = "# Execute Result\n"
 FIXED_MODEL_NAME = "DeepAnalyze-8B"
-STRUCTURED_TAG_NAMES = ("Analyze", "Understand", "Code", "Execute", "Answer", "File")
-STRUCTURED_OPEN_TAGS = tuple(f"<{tag}>" for tag in STRUCTURED_TAG_NAMES)
-STRUCTURED_TAG_PATTERN = "|".join(STRUCTURED_TAG_NAMES)
-STRUCTURED_OPEN_TAG_RE = re.compile(rf"<({STRUCTURED_TAG_PATTERN})>")
 
 
 @dataclass(frozen=True)
@@ -74,7 +81,7 @@ def _build_execution_feedback_message(
 
 
 def _get_or_create_stop_event(session_id: str) -> threading.Event:
-    sid = session_id or "default"
+    sid = validate_session_id(session_id)
     with _STOP_EVENTS_LOCK:
         event = _STOP_EVENTS.get(sid)
         if event is None:
@@ -85,6 +92,35 @@ def _get_or_create_stop_event(session_id: str) -> threading.Event:
 
 def request_stop(session_id: str) -> None:
     _get_or_create_stop_event(session_id).set()
+
+
+def get_session_stop_event(session_id: str) -> threading.Event:
+    return _get_or_create_stop_event(session_id)
+
+
+def _get_or_create_session_run_lock(session_id: str) -> threading.Lock:
+    sid = validate_session_id(session_id)
+    with _SESSION_RUN_LOCKS_LOCK:
+        lock = _SESSION_RUN_LOCKS.get(sid)
+        if lock is None:
+            lock = threading.Lock()
+            _SESSION_RUN_LOCKS[sid] = lock
+        return lock
+
+
+def try_acquire_session_run(session_id: str) -> threading.Lock | None:
+    lock = _get_or_create_session_run_lock(session_id)
+    return lock if lock.acquire(blocking=False) else None
+
+
+def release_session_run(session_id: str, lock: threading.Lock) -> None:
+    _get_or_create_stop_event(session_id).clear()
+    lock.release()
+
+
+def _execution_status_block(kind: str, message: str) -> str:
+    logger.warning("analysis_status kind=%s message=%s", kind, message)
+    return f"\n<Execute>\n[{kind}]: {message}\n</Execute>\n"
 
 
 def _normalize_temperature(value: Any) -> float:
@@ -124,119 +160,13 @@ def build_chat_runtime_config(payload: dict[str, Any] | None) -> ChatRuntimeConf
     )
 
 
-def _infer_missing_close_tag(content: str) -> str | None:
-    if _has_unclosed_section(content, "Code"):
-        return "</Code>"
-    if _has_unclosed_section(content, "Answer"):
-        return "</Answer>"
-    return None
-
-
-def _mask_backticked_content(content: str) -> str:
-    raw = content or ""
-    chars = list(raw)
-    length = len(raw)
-    cursor = 0
-
-    while cursor < length:
-        if raw[cursor] != "`":
-            cursor += 1
-            continue
-
-        tick_count = 1
-        while cursor + tick_count < length and raw[cursor + tick_count] == "`":
-            tick_count += 1
-
-        delimiter = "`" * tick_count
-        end_index = raw.find(delimiter, cursor + tick_count)
-        if end_index == -1:
-            end_index = length
-        else:
-            end_index += tick_count
-
-        for i in range(cursor, end_index):
-            chars[i] = " "
-        cursor = end_index
-
-    return "".join(chars)
-
-
-def _iter_top_level_structured_sections(content: str) -> list[dict[str, Any]]:
-    raw = content or ""
-    masked = _mask_backticked_content(raw)
-    sections: list[dict[str, Any]] = []
-    cursor = 0
-
-    while True:
-        open_match = STRUCTURED_OPEN_TAG_RE.search(masked, cursor)
-        if open_match is None:
-            break
-
-        tag = open_match.group(1)
-        open_end = open_match.end()
-        close_tag = f"</{tag}>"
-        close_index = masked.find(close_tag, open_end)
-
-        if close_index == -1:
-            sections.append(
-                {
-                    "tag": tag,
-                    "body": raw[open_end:],
-                    "completed": False,
-                }
-            )
-            break
-
-        sections.append(
-            {
-                "tag": tag,
-                "body": raw[open_end:close_index],
-                "completed": True,
-            }
-        )
-        cursor = close_index + len(close_tag)
-
-    return sections
-
-
-def _has_unclosed_section(content: str, tag: str) -> bool:
-    sections = _iter_top_level_structured_sections(content)
-    for section in reversed(sections):
-        if section["tag"] == tag:
-            return not bool(section["completed"])
-    return False
-
-
-def _has_completed_section(content: str, tag: str) -> bool:
-    sections = _iter_top_level_structured_sections(content)
-    return any(section["tag"] == tag and section["completed"] for section in sections)
-
-
-def _extract_latest_completed_section_body(content: str, tag: str) -> str:
-    sections = _iter_top_level_structured_sections(content)
-    for section in reversed(sections):
-        if section["tag"] == tag and section["completed"]:
-            return str(section["body"]).strip()
-    return ""
-
-
-def _starts_with_structured_tag(content: str) -> bool:
-    masked = _mask_backticked_content(content or "")
-    return bool(re.match(rf"^\s*<({STRUCTURED_TAG_PATTERN})>", masked))
-
-
-def _starts_with_partial_structured_open_tag(content: str) -> bool:
-    stripped = _mask_backticked_content(content or "").lstrip()
-    if not stripped or not stripped.startswith("<"):
-        return False
-    return any(tag.startswith(stripped) for tag in STRUCTURED_OPEN_TAGS)
-
-
 def _iter_local_stream(
     conversation: list[dict[str, Any]],
     runtime_config: ChatRuntimeConfig,
 ):
-    response = client.chat.completions.create(
+    response = client.with_options(
+        timeout=settings.model_stream_read_timeout_sec
+    ).chat.completions.create(
         model=runtime_config.model,
         messages=conversation,
         temperature=runtime_config.temperature,
@@ -267,7 +197,6 @@ def _iter_heywhale_stream(
         "messages": conversation,
         "temperature": runtime_config.temperature,
         "stream": True,
-        "stop": REMOTE_STOP_SEQUENCES,
     }
 
     primary_url = f"{runtime_config.api_base.rstrip('/')}/chat/completions"
@@ -275,7 +204,8 @@ def _iter_heywhale_stream(
     if runtime_config.api_base.rstrip("/") == HEYWHALE_API_BASE.rstrip("/"):
         request_urls.append(HEYWHALE_BACKUP_CHAT_COMPLETIONS_URL)
 
-    with httpx.Client(timeout=None) as http_client:
+    timeout = httpx.Timeout(settings.model_stream_read_timeout_sec, connect=10)
+    with httpx.Client(timeout=timeout) as http_client:
         for idx, request_url in enumerate(request_urls):
             has_stream_output = False
             try:
@@ -324,14 +254,14 @@ def _iter_custom_stream(
         "messages": conversation,
         "temperature": runtime_config.temperature,
         "stream": True,
-        "stop": REMOTE_STOP_SEQUENCES,
     }
 
     headers = {"Content-Type": "application/json"}
     if runtime_config.api_key:
         headers["Authorization"] = f"Bearer {runtime_config.api_key}"
 
-    with httpx.Client(timeout=None) as http_client:
+    timeout = httpx.Timeout(settings.model_stream_read_timeout_sec, connect=10)
+    with httpx.Client(timeout=timeout) as http_client:
         with http_client.stream(
             "POST",
             f"{runtime_config.api_base.rstrip('/')}/chat/completions",
@@ -367,8 +297,18 @@ def _resolve_workspace_selection(
     resolved_paths: list[Path] = []
     for item in workspace or []:
         candidate = Path(item)
-        if not candidate.is_absolute():
-            candidate = (workspace_root / candidate).resolve()
+        if candidate.is_absolute():
+            candidate = candidate.resolve()
+            if candidate != workspace_root and workspace_root not in candidate.parents:
+                continue
+        else:
+            try:
+                candidate = resolve_workspace_path(
+                    workspace_root.name,
+                    str(candidate),
+                )
+            except Exception:
+                continue
         if candidate.exists() and candidate.is_file():
             resolved_paths.append(candidate)
     return resolved_paths
@@ -387,8 +327,7 @@ def _build_user_prompt(messages: list[dict[str, Any]], workspace: list[str], wor
         messages[-1]["content"] = f"# Instruction\n{user_message}"
 
 
-def _extract_code_to_execute(content: str) -> str | None:
-    code_content = _extract_latest_completed_section_body(content, "Code")
+def _extract_code_to_execute(code_content: str) -> str | None:
     if not code_content:
         return None
     md_match = re.search(r"```(?:python)?(.*?)```", code_content, re.DOTALL)
@@ -398,16 +337,11 @@ def _extract_code_to_execute(content: str) -> str | None:
     return code_str
 
 
-def _extract_answer_content(content: str) -> str:
-    return _extract_latest_completed_section_body(content, "Answer")
-
-
 def _save_answer_markdown_report(
-    content: str,
+    answer_content: str,
     workspace_dir: str,
     session_id: str,
 ) -> Path | None:
-    answer_content = _extract_answer_content(content)
     if not answer_content:
         return None
 
@@ -431,37 +365,50 @@ def bot_stream(
     runtime_config: ChatRuntimeConfig | None = None,
 ):
     runtime_config = runtime_config or ChatRuntimeConfig()
+    session_id = validate_session_id(session_id)
+    session_lock = try_acquire_session_run(session_id)
+    if session_lock is None:
+        yield _execution_status_block("Session Busy", "another analysis is already running")
+        return
+
     stop_event = _get_or_create_stop_event(session_id)
-    stop_event.clear()
-    conversation = deepcopy(messages or [])
-    workspace_paths = list(workspace or [])
-    workspace_dir = get_session_workspace(session_id)
-    generated_dir = str(Path(workspace_dir) / "generated")
-    Path(generated_dir).mkdir(parents=True, exist_ok=True)
-
-    if conversation and conversation[0].get("role") == "assistant":
-        conversation = conversation[1:]
-
-    _build_user_prompt(conversation, workspace_paths, workspace_dir)
-
-    initial_workspace = {
-        path.resolve() for path in _resolve_workspace_selection(workspace_paths, workspace_dir)
-    }
-    finished = False
-    should_patch_first_assistant_message = not any(
-        str(message.get("role") or "") == "assistant" for message in conversation
-    )
-
     try:
+        conversation = deepcopy(messages or [])
+        workspace_paths = list(workspace or [])
+        workspace_dir = get_session_workspace(session_id)
+        generated_dir = str(Path(workspace_dir) / "generated")
+        Path(generated_dir).mkdir(parents=True, exist_ok=True)
+
+        if conversation and conversation[0].get("role") == "assistant":
+            conversation = conversation[1:]
+
+        _build_user_prompt(conversation, workspace_paths, workspace_dir)
+        initial_workspace = {
+            path.resolve() for path in Path(workspace_dir).rglob("*") if path.is_file()
+        }
+        finished = False
+        round_count = 0
+        code_execution_count = 0
+        started_at = time.monotonic()
+        stop_event.clear()
         while not finished:
             if stop_event.is_set():
                 break
+            if time.monotonic() - started_at >= settings.chat_max_duration_sec:
+                yield _execution_status_block(
+                    "Budget Exceeded",
+                    f"analysis exceeded {settings.chat_max_duration_sec} seconds",
+                )
+                break
+            if round_count >= settings.chat_max_rounds:
+                yield _execution_status_block(
+                    "Budget Exceeded",
+                    f"analysis exceeded {settings.chat_max_rounds} model rounds",
+                )
+                break
+            round_count += 1
 
             cur_res = ""
-            last_chunk = None
-            leading_chunks: list[str] = []
-            leading_decided = not should_patch_first_assistant_message
-            answer_report_saved = False
             stream_iter = (
                 _iter_heywhale_stream(conversation, runtime_config)
                 if runtime_config.provider == "heywhale"
@@ -474,95 +421,78 @@ def bot_stream(
             try:
                 for delta, chunk in stream_iter:
                     if stop_event.is_set():
+                        break
+                    if time.monotonic() - started_at >= settings.chat_max_duration_sec:
+                        yield _execution_status_block(
+                            "Budget Exceeded",
+                            f"analysis exceeded {settings.chat_max_duration_sec} seconds",
+                        )
                         finished = True
                         break
-                    last_chunk = chunk
                     if delta is not None:
-                        if not leading_decided:
-                            leading_chunks.append(delta)
-                            combined = "".join(leading_chunks)
-                            if not combined.strip():
-                                continue
-                            if _starts_with_partial_structured_open_tag(combined):
-                                continue
-                            leading_decided = True
-                            should_prefix = not _starts_with_structured_tag(combined)
-                            if should_prefix:
-                                cur_res += "<Analyze>\n"
-                                yield "<Analyze>\n"
-                            cur_res += combined
-                            yield combined
-                            should_patch_first_assistant_message = False
-                            continue
                         cur_res += delta
-                        yield delta
-                    if _has_completed_section(cur_res, "Answer"):
-                        if not answer_report_saved:
-                            report_path = _save_answer_markdown_report(
-                                cur_res,
-                                workspace_dir,
-                                session_id,
+                        if len(cur_res) > settings.chat_max_response_chars:
+                            yield _execution_status_block(
+                                "Budget Exceeded",
+                                "model response exceeded the configured size limit",
                             )
-                            if report_path is not None:
-                                file_block = build_file_block(
-                                    [report_path],
-                                    workspace_dir,
-                                    session_id,
-                                )
-                                if file_block:
-                                    cur_res += file_block
-                                    yield file_block
-                            answer_report_saved = True
-                        finished = True
+                            finished = True
+                            break
+                        yield delta
+                    if contains_completed_action(cur_res, "Answer"):
                         break
-            except httpx.HTTPError as exc:
-                raise RuntimeError(f"HeyWhale request failed: {exc}") from exc
+            except (httpx.HTTPError, openai.OpenAIError) as exc:
+                yield _execution_status_block("Model Error", str(exc))
+                return
 
-            if stop_event.is_set():
+            if stop_event.is_set() or finished:
                 break
 
-            finish_reason = None
-            if last_chunk:
-                try:
-                    finish_reason = last_chunk["choices"][0]["finish_reason"]
-                except Exception:
-                    finish_reason = getattr(last_chunk.choices[0], "finish_reason", None)
+            try:
+                actions = validate_model_actions(cur_res)
+            except ProtocolValidationError as exc:
+                yield _execution_status_block("Protocol Error", str(exc))
+                break
 
-            missing_tag = _infer_missing_close_tag(cur_res)
-            if finish_reason == "stop" and not finished and missing_tag:
-                cur_res += missing_tag
-                yield missing_tag
-                if missing_tag == "</Answer>":
-                    if not answer_report_saved:
-                        report_path = _save_answer_markdown_report(
-                            cur_res,
-                            workspace_dir,
-                            session_id,
-                        )
-                        if report_path is not None:
-                            file_block = build_file_block(
-                                [report_path],
-                                workspace_dir,
-                                session_id,
-                            )
-                            if file_block:
-                                cur_res += file_block
-                                yield file_block
-                        answer_report_saved = True
-                    finished = True
-
-            if not _has_completed_section(cur_res, "Code") or finished:
+            terminal_action = actions[-1]
+            if terminal_action.tag == "Answer":
+                report_path = _save_answer_markdown_report(
+                    terminal_action.body,
+                    workspace_dir,
+                    session_id,
+                )
+                if report_path is not None:
+                    file_block = build_file_block([report_path], workspace_dir, session_id)
+                    if file_block:
+                        yield file_block
+                finished = True
                 continue
 
+            if code_execution_count >= settings.chat_max_code_executions:
+                yield _execution_status_block(
+                    "Budget Exceeded",
+                    f"analysis exceeded {settings.chat_max_code_executions} code executions",
+                )
+                break
+            code_execution_count += 1
             conversation.append({"role": "assistant", "content": cur_res})
-            code_str = _extract_code_to_execute(cur_res)
+            code_str = _extract_code_to_execute(terminal_action.body)
             if not code_str:
-                continue
+                yield _execution_status_block("Protocol Error", "empty executable code")
+                break
 
             before_state = snapshot_workspace_files(workspace_dir)
-            exe_output = execute_code_safe(code_str, workspace_dir, session_id)
-            if stop_event.is_set():
-                break
+            remaining_seconds = max(
+                1,
+                settings.chat_max_duration_sec - int(time.monotonic() - started_at),
+            )
+            exe_output = execute_code_safe(
+                code_str,
+                workspace_dir,
+                session_id,
+                min(settings.execution_timeout_sec, remaining_seconds),
+                stop_event,
+            )
             after_state = snapshot_workspace_files(workspace_dir)
             artifact_paths = collect_artifact_paths(
                 before_state,
@@ -578,6 +508,8 @@ def bot_stream(
             conversation.append(
                 _build_execution_feedback_message(runtime_config, exe_output)
             )
+            if stop_event.is_set():
+                break
 
             current_files = {
                 path.resolve() for path in Path(workspace_dir).rglob("*") if path.is_file()
@@ -587,4 +519,4 @@ def bot_stream(
                 workspace_paths.extend(new_files)
                 initial_workspace.update(Path(path).resolve() for path in new_files)
     finally:
-        stop_event.clear()
+        release_session_run(session_id, session_lock)
