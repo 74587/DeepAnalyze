@@ -16,6 +16,7 @@ import openai
 
 from .execution import build_file_block
 from .execution_service import execute_managed_code
+from .docker_executor import ensure_execution_backend_ready
 from .action_protocol import (
     ProtocolValidationError,
     contains_completed_action,
@@ -46,6 +47,16 @@ HEYWHALE_BACKUP_CHAT_COMPLETIONS_URL = (
 )
 EXECUTE_RESULT_PREFIX = "# Execute Result\n"
 FIXED_MODEL_NAME = "DeepAnalyze-8B"
+_FENCE_WITH_INFO_RE = re.compile(r"```[ \t]*[\w.+-]*[ \t]*\r?\n(.*?)```", re.DOTALL)
+_FENCE_INLINE_RE = re.compile(r"```(?:python)?(.*?)```", re.DOTALL | re.IGNORECASE)
+PROTOCOL_REPAIR_PROMPT = (
+    "Your previous response did not follow the required output format: {error}. "
+    "Regenerate your response strictly as structured action blocks. Rules: "
+    "wrap ALL content inside <Analyze>, <Understand>, <Code>, or <Answer> tags; "
+    "no text outside the tags; every opened tag must be closed; end with exactly "
+    "one complete <Code> block (python code, to be executed) or one complete "
+    "<Answer> block (the final report)."
+)
 
 
 @dataclass(frozen=True)
@@ -110,7 +121,9 @@ def try_acquire_session_run(session_id: str) -> threading.Lock | None:
 
 
 def release_session_run(session_id: str, lock: threading.Lock) -> None:
-    _get_or_create_stop_event(session_id).clear()
+    # Do NOT clear the stop event here: a stop request that lands in the gap
+    # between run completion and release would be silently swallowed. The event
+    # is cleared at the start of each new run instead.
     lock.release()
 
 
@@ -335,7 +348,12 @@ def _build_user_prompt(
 def _extract_code_to_execute(code_content: str) -> str | None:
     if not code_content:
         return None
-    md_match = re.search(r"```(?:python)?(.*?)```", code_content, re.DOTALL)
+    # Prefer a fenced block whose opening line carries an optional single-token
+    # info string (```python / ```py / ```Python3 ...); fall back to the legacy
+    # inline form so bare ``` ... ``` fences keep working.
+    md_match = _FENCE_WITH_INFO_RE.search(code_content) or _FENCE_INLINE_RE.search(
+        code_content
+    )
     code_str = md_match.group(1).strip() if md_match else code_content
     if re.search(r"(^|\W)(plt\.|matplotlib|sns\.|seaborn)", code_str, re.IGNORECASE):
         return CHINESE_MATPLOTLIB_BOOTSTRAP + "\n" + code_str
@@ -363,6 +381,15 @@ def _save_answer_markdown_report(
     return report_path
 
 
+def _prewarm_execution_backend(session_id: str) -> None:
+    """Allocate/reuse the session container while the model is still generating,
+    so the first <Code> block does not pay the container start-up cost."""
+    try:
+        ensure_execution_backend_ready(session_id)
+    except Exception as exc:  # pragma: no cover - best-effort warm-up
+        logger.warning("container prewarm failed for %s: %s", session_id, exc)
+
+
 def bot_stream(
     messages: list[dict[str, Any]],
     workspace: list[str] | None,
@@ -382,6 +409,12 @@ def bot_stream(
         workspace_paths = list(workspace or [])
         workspace_dir = get_session_workspace(session_id)
         Path(workspace_dir, "generated").mkdir(parents=True, exist_ok=True)
+        if settings.use_docker_execution:
+            threading.Thread(
+                target=_prewarm_execution_backend,
+                args=(session_id,),
+                daemon=True,
+            ).start()
 
         if conversation and conversation[0].get("role") == "assistant":
             conversation = conversation[1:]
@@ -398,6 +431,7 @@ def bot_stream(
         finished = False
         round_count = 0
         code_execution_count = 0
+        protocol_repairs_left = settings.chat_protocol_repair_attempts
         started_at = time.monotonic()
         stop_event.clear()
         while not finished:
@@ -460,6 +494,23 @@ def bot_stream(
             try:
                 actions = validate_model_actions(cur_res)
             except ProtocolValidationError as exc:
+                # General-purpose LLMs occasionally drift from the action format
+                # (e.g. a conversational preamble). Instead of aborting the whole
+                # analysis, feed the error back once and let the model repair it.
+                if protocol_repairs_left > 0:
+                    protocol_repairs_left -= 1
+                    yield _execution_status_block(
+                        "Protocol Warning",
+                        f"{exc}; asking the model to reformat and continue",
+                    )
+                    conversation.append({"role": "assistant", "content": cur_res})
+                    conversation.append(
+                        {
+                            "role": "user",
+                            "content": PROTOCOL_REPAIR_PROMPT.format(error=exc),
+                        }
+                    )
+                    continue
                 yield _execution_status_block("Protocol Error", str(exc))
                 break
 
@@ -516,5 +567,10 @@ def bot_stream(
             if new_files:
                 workspace_paths.extend(new_files)
                 initial_workspace.update(Path(path).resolve() for path in new_files)
+    except GeneratorExit:
+        # The client disconnected mid-stream; make sure the analysis loop and any
+        # queued sandbox execution stop instead of burning the remaining budget.
+        stop_event.set()
+        raise
     finally:
         release_session_run(session_id, session_lock)

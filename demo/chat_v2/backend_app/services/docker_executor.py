@@ -35,17 +35,24 @@ def _run_docker_command(
     args: list[str],
     *,
     check: bool = True,
-    timeout: int | None = None,
+    timeout: int | None = 60,
 ) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["docker", *args],
-        check=check,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=timeout,
-    )
+    # A default timeout guards every call: a wedged Docker daemon would otherwise
+    # hang the caller (and, via _DOCKER_LOCK, every other session) indefinitely.
+    try:
+        return subprocess.run(
+            ["docker", *args],
+            check=check,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"Docker command timed out after {timeout}s: docker {' '.join(args[:2])} ..."
+        ) from exc
 
 
 def _keepalive_command() -> list[str]:
@@ -161,7 +168,53 @@ def _cleanup_idle_session_containers(now: float | None = None) -> None:
         state = _SESSION_CONTAINERS.pop(session_id, None)
         if state is None:
             continue
-        _remove_container(state.container_name, remove=state.created_by_app)
+        try:
+            _remove_container(state.container_name, remove=state.created_by_app)
+        except RuntimeError:
+            # Best-effort reclamation; never let cleanup break the caller.
+            continue
+
+
+def cleanup_idle_containers() -> None:
+    """Public entry point for the periodic idle-container reaper."""
+    if not settings.use_docker_execution:
+        return
+    with _DOCKER_LOCK:
+        _cleanup_idle_session_containers()
+
+
+def remove_orphan_managed_containers() -> None:
+    """Remove managed containers left behind by a previous backend process.
+
+    Only runs when docker_stop_on_shutdown is enabled: it completes the same
+    contract for backends that crashed before their shutdown hook could run.
+    """
+    if not settings.use_docker_execution or not settings.docker_stop_on_shutdown:
+        return
+    completed = _run_docker_command(
+        [
+            "ps",
+            "-a",
+            "--filter",
+            f"label={MANAGED_LABEL_KEY}=true",
+            "--format",
+            "{{.Names}}",
+        ],
+        check=False,
+        timeout=30,
+    )
+    if completed.returncode != 0:
+        return
+    orphan_names = [name for name in (completed.stdout or "").split() if name]
+    with _DOCKER_LOCK:
+        tracked = {state.container_name for state in _SESSION_CONTAINERS.values()}
+        for name in orphan_names:
+            if name in tracked:
+                continue
+            try:
+                _remove_container(name, remove=True)
+            except RuntimeError:
+                continue
 
 
 def ensure_execution_backend_ready(session_id: str | None = None) -> None:
@@ -258,7 +311,10 @@ def shutdown_execution_backend() -> None:
 
     with _DOCKER_LOCK:
         for session_id, state in list(_SESSION_CONTAINERS.items()):
-            _remove_container(state.container_name, remove=state.created_by_app)
+            try:
+                _remove_container(state.container_name, remove=state.created_by_app)
+            except RuntimeError:
+                pass
             _SESSION_CONTAINERS.pop(session_id, None)
 
 

@@ -152,6 +152,10 @@ async def chat(body: dict = Body(...)):
                     ],
                 }
                 yield json.dumps(chunk) + "\n"
+        except GeneratorExit:
+            # Client disconnected: stop the analysis instead of letting it run on.
+            request_stop(session_id)
+            raise
         finally:
             if assistant_parts:
                 upsert_message(

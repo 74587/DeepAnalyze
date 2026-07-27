@@ -1,8 +1,11 @@
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
+import asyncio
+import logging
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 
 from .routers.chat import router as chat_router
@@ -11,17 +14,40 @@ from .routers.export import router as export_router
 from .routers.session import router as session_router
 from .routers.workspace import router as workspace_router
 from .services.docker_executor import (
+    cleanup_idle_containers,
+    remove_orphan_managed_containers,
     shutdown_execution_backend,
     validate_execution_backend_configuration,
 )
+
+logger = logging.getLogger(__name__)
+
+_REAPER_INTERVAL_SEC = 60
+
+
+async def _idle_container_reaper() -> None:
+    while True:
+        await asyncio.sleep(_REAPER_INTERVAL_SEC)
+        try:
+            await run_in_threadpool(cleanup_idle_containers)
+        except Exception as exc:  # pragma: no cover - best-effort reclamation
+            logger.warning("idle container reaper failed: %s", exc)
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     validate_execution_backend_configuration()
     try:
+        await run_in_threadpool(remove_orphan_managed_containers)
+    except Exception as exc:  # pragma: no cover - best-effort sweep
+        logger.warning("orphan container sweep failed: %s", exc)
+    reaper_task = asyncio.create_task(_idle_container_reaper())
+    try:
         yield
     finally:
+        reaper_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await reaper_task
         shutdown_execution_backend()
 
 

@@ -19,6 +19,7 @@ from .workspace import (
     get_session_workspace,
     register_generated_paths,
 )
+from ..settings import settings
 
 
 @dataclass(frozen=True)
@@ -58,6 +59,20 @@ def _build_diff(original_code: str, code: str) -> str:
     )
 
 
+def _truncate_output(text: str, limit: int) -> str:
+    """Keep execution output bounded before it is streamed to the UI and
+    re-injected into the model context (a runaway print loop would otherwise
+    blow up both)."""
+    if limit <= 0 or len(text) <= limit:
+        return text
+    head = text[: limit // 2].rstrip()
+    tail = text[-(limit - limit // 2) :].lstrip()
+    omitted = len(text) - len(head) - len(tail)
+    return (
+        f"{head}\n\n... [output truncated: {omitted} characters omitted] ...\n\n{tail}"
+    )
+
+
 def execute_managed_code(
     code: str,
     session_id: str,
@@ -90,6 +105,7 @@ def execute_managed_code(
         timeout_sec,
         cancel_event,
     )
+    result = _truncate_output(result, settings.execution_output_max_chars)
     after_state = snapshot_workspace_files(str(workspace_root))
     artifact_paths = collect_artifact_paths(
         before_state,

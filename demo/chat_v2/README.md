@@ -1,6 +1,6 @@
-# Chat Demo
+# DA-Studio (Chat Demo)
 
-`demo/chat_v2` is the browser-based DeepAnalyze demo. It includes the backend API, the workspace/file layer, the frontend UI, and both local and Docker execution modes.
+`demo/chat_v2` is **DA-Studio**, the browser-based DeepAnalyze demo system presented in the PVLDB demo paper *"DA-Studio: An Agentic System for End-to-End Data Analysis"*. It includes the backend API, the workspace/file layer, the frontend UI, and both local and Docker execution modes.
 
 [Chinese Version](./README_ZH.md)
 
@@ -157,14 +157,14 @@ bash stop.sh
 ### Windows
 
 ```bat
-cd demo\chat
+cd demo\chat_v2
 start.bat
 ```
 
 Stop:
 
 ```bat
-cd demo\chat
+cd demo\chat_v2
 stop.bat
 ```
 

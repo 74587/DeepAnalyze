@@ -77,7 +77,10 @@ IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"}
 class Settings:
     api_base: str = os.getenv("DEEPANALYZE_API_BASE", "http://localhost:8000/v1")
     model_path: str = os.getenv("DEEPANALYZE_MODEL_PATH", "DeepAnalyze-8B")
-    workspace_base_dir: str = os.getenv("DEEPANALYZE_WORKSPACE_BASE", "workspace")
+    workspace_base_dir: str = os.getenv(
+        "DEEPANALYZE_WORKSPACE_BASE",
+        str(Path(__file__).resolve().parent.parent / "workspace"),
+    )
     http_server_host: str = os.getenv("DEEPANALYZE_FILE_SERVER_HOST", "localhost")
     http_server_port: int = int(os.getenv("DEEPANALYZE_FILE_SERVER_PORT", "8100"))
     backend_host: str = os.getenv("DEEPANALYZE_BACKEND_HOST", "0.0.0.0")
@@ -150,6 +153,16 @@ class Settings:
     )
     model_stream_read_timeout_sec: int = _get_int_env(
         "DEEPANALYZE_MODEL_STREAM_READ_TIMEOUT_SEC", 60, minimum=5
+    )
+    execution_output_max_chars: int = _get_int_env(
+        "DEEPANALYZE_EXECUTION_OUTPUT_MAX_CHARS", 32768, minimum=1024
+    )
+    chat_protocol_repair_attempts: int = _get_int_env(
+        "DEEPANALYZE_CHAT_PROTOCOL_REPAIR_ATTEMPTS", 2, minimum=0
+    )
+    enable_external_proxy: bool = _get_bool_env(
+        "DEEPANALYZE_ENABLE_EXTERNAL_PROXY",
+        False,
     )
 
     @property

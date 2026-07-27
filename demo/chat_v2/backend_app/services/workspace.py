@@ -6,9 +6,10 @@ import shutil
 import sqlite3
 import tempfile
 import zipfile
+from contextlib import closing
 from pathlib import Path, PurePosixPath
 from typing import Iterable, Sequence
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlparse
 
 import httpx
 import pandas as pd
@@ -429,7 +430,10 @@ def preview_workspace_file(
         )
 
     if ext in SQLITE_PREVIEW_EXTENSIONS:
-        with sqlite3.connect(file_path) as connection:
+        # sqlite3's context manager only manages transactions, not the
+        # connection: use closing() so previews don't leak file handles
+        # (which also blocks deleting the .db file on Windows).
+        with closing(sqlite3.connect(file_path)) as connection:
             cursor = connection.cursor()
             table_names = [
                 row[0]
@@ -746,18 +750,44 @@ def delete_workspace_dir(session_id: str, relative_path: str, recursive: bool = 
     return {"message": "deleted"}
 
 
+_PROXY_MAX_BYTES = 10 * 1024 * 1024
+
+
 async def proxy_external_file(url: str) -> Response:
+    # Off by default: an open proxy is an SSRF hole (internal endpoints,
+    # cloud metadata services). Enable only via DEEPANALYZE_ENABLE_EXTERNAL_PROXY.
+    if not settings.enable_external_proxy:
+        raise HTTPException(status_code=403, detail="External proxy is disabled")
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
+        raise HTTPException(status_code=400, detail="Only http/https URLs are allowed")
     try:
         async with httpx.AsyncClient(follow_redirects=True, timeout=15) as client:
-            response = await client.get(url)
+            async with client.stream("GET", url) as response:
+                chunks: list[bytes] = []
+                total = 0
+                async for chunk in response.aiter_bytes():
+                    total += len(chunk)
+                    if total > _PROXY_MAX_BYTES:
+                        raise HTTPException(
+                            status_code=502, detail="Proxied file too large"
+                        )
+                    chunks.append(chunk)
+                content = b"".join(chunks)
+                media_type = response.headers.get(
+                    "content-type", "application/octet-stream"
+                )
+                status_code = response.status_code
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Proxy fetch failed: {exc}") from exc
 
     return Response(
-        content=response.content,
-        media_type=response.headers.get("content-type", "application/octet-stream"),
+        content=content,
+        media_type=media_type,
         headers={"Access-Control-Allow-Origin": "*"},
-        status_code=response.status_code,
+        status_code=status_code,
     )
 
 

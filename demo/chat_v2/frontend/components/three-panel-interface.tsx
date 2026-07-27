@@ -1034,6 +1034,10 @@ export function ThreePanelInterface() {
   const [isStopping, setIsStopping] = useState(false);
   const [attachments, setAttachments] = useState<FileAttachment[]>([]);
   const [workspaceFiles, setWorkspaceFiles] = useState<WorkspaceFile[]>([]);
+  const workspaceFilesRef = useRef<WorkspaceFile[]>([]);
+  useEffect(() => {
+    workspaceFilesRef.current = workspaceFiles;
+  }, [workspaceFiles]);
   const [workspaceTree, setWorkspaceTree] = useState<WorkspaceNode | null>(
     null
   );
@@ -1140,6 +1144,7 @@ export function ThreePanelInterface() {
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewDownloadUrl, setPreviewDownloadUrl] = useState<string>("");
   const previewScrollRef = useRef<HTMLDivElement>(null);
+  const previewRequestIdRef = useRef(0);
   const [deleteConfirmPath, setDeleteConfirmPath] = useState<string | null>(
     null
   );
@@ -1174,6 +1179,7 @@ export function ThreePanelInterface() {
   const streamAbortControllerRef = useRef<AbortController | null>(null);
   const workspaceFilesAbortRef = useRef<AbortController | null>(null);
   const workspaceFilesLoadingRef = useRef(false);
+  const workspaceFilesPendingRefreshRef = useRef(false);
   const lastWorkspaceFilesErrorRef = useRef("");
   const isTypingRef = useRef(false);
   const toastRef = useRef(toast);
@@ -1371,7 +1377,10 @@ export function ThreePanelInterface() {
 
   const loadWorkspaceFiles = useCallback(async () => {
     if (!sessionId) return;
-    if (workspaceFilesLoadingRef.current) return;
+    if (workspaceFilesLoadingRef.current) {
+      workspaceFilesPendingRefreshRef.current = true;
+      return;
+    }
     const controller = new AbortController();
     workspaceFilesAbortRef.current = controller;
     workspaceFilesLoadingRef.current = true;
@@ -1423,6 +1432,10 @@ export function ThreePanelInterface() {
         workspaceFilesAbortRef.current = null;
       }
       workspaceFilesLoadingRef.current = false;
+      if (workspaceFilesPendingRefreshRef.current) {
+        workspaceFilesPendingRefreshRef.current = false;
+        void loadWorkspaceFiles();
+      }
     }
   }, [sessionId]);
 
@@ -1437,13 +1450,14 @@ export function ThreePanelInterface() {
   }, [sessionId, loadWorkspaceFiles]);
 
   useEffect(() => {
+    const intervalMs = isTyping ? 3000 : 10000;
     const id = window.setInterval(() => {
       const isVisible =
         typeof document !== "undefined" && document.visibilityState === "visible";
-      if (!isUploading && !isTyping && isVisible) {
+      if (!isUploading && isVisible) {
         void loadWorkspaceFiles();
       }
-    }, 10000);
+    }, intervalMs);
     return () => window.clearInterval(id);
   }, [isTyping, isUploading, loadWorkspaceFiles]);
 
@@ -1630,6 +1644,13 @@ export function ThreePanelInterface() {
         uiLanguage === "zh"
           ? "例如 CSV / XLSX、SQLite / DB、TXT / MD 均可上传。"
           : "Examples: CSV / XLSX, SQLite / DB, TXT / MD .",
+      streamInterrupted:
+        uiLanguage === "zh"
+          ? "⚠️ 与分析后端的连接已中断，你可以重新提交任务。"
+          : "⚠️ Connection to the analysis backend was interrupted. You can resubmit the task.",
+      appTitle: "DA-Studio",
+      appSubtitle:
+        uiLanguage === "zh" ? "由 DeepAnalyze 驱动" : "powered by DeepAnalyze",
     }),
     [uiLanguage]
   );
@@ -1850,7 +1871,14 @@ export function ThreePanelInterface() {
 
   useEffect(() => {
     if (!selectedPresetPrompt) return;
-    setInputValue(selectedPresetPrompt);
+    setInputValue((prev) => {
+      const isUnmodified =
+        !prev ||
+        DATA_ANALYSIS_PROMPT_PRESETS.some(
+          (item) => item.prompt.en === prev || item.prompt.zh === prev
+        );
+      return isUnmodified ? selectedPresetPrompt : prev;
+    });
   }, [selectedPresetPrompt]);
 
   const generatedBundleCounts = useMemo(() => {
@@ -2687,7 +2715,7 @@ export function ThreePanelInterface() {
 
       const normalizedTarget = decodeSafe(normalizedPath).toLowerCase();
       const hasSlash = normalizedPath.includes("/");
-      const matchedFile = workspaceFiles
+      const matchedFile = workspaceFilesRef.current
         .filter((file) => {
           const filePath = String(file.path || "")
             .replace(/\\/g, "/")
@@ -2730,7 +2758,7 @@ export function ThreePanelInterface() {
 
       return matchedFile?.path || normalizedPath;
     },
-    [workspaceFiles]
+    []
   );
 
   const normalizeToLocalFileUrl = useCallback(
@@ -2875,6 +2903,8 @@ export function ThreePanelInterface() {
       const nextTableName = options?.tableName ?? "";
       const nextSheetName = options?.sheetName ?? "";
 
+      const requestId = ++previewRequestIdRef.current;
+
       setPreviewTitle(file.name);
       setPreviewDownloadUrl(
         resolveWorkspaceFileUrl(file.download_url || file.preview_url || "", {
@@ -2936,10 +2966,12 @@ export function ThreePanelInterface() {
         );
         if (!res.ok) throw new Error("failed to fetch preview");
         const payload = (await res.json()) as PreviewPayload;
+        if (previewRequestIdRef.current !== requestId) return;
         setPreviewPayload(payload);
         setPreviewType(payload.kind);
         setPreviewContent(payload.content || "");
       } catch (e) {
+        if (previewRequestIdRef.current !== requestId) return;
         setPreviewType("binary");
         setPreviewContent(file.download_url);
         setPreviewPayload({
@@ -2948,7 +2980,9 @@ export function ThreePanelInterface() {
           content: file.download_url,
         });
       } finally {
-        setPreviewLoading(false);
+        if (previewRequestIdRef.current === requestId) {
+          setPreviewLoading(false);
+        }
       }
     },
     [sessionId]
@@ -5286,7 +5320,6 @@ export function ThreePanelInterface() {
       });
 
       const contentType = response.headers.get("content-type") || "";
-      console.log("[Chat] status=", response.status, "ctype=", contentType);
 
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
@@ -5374,6 +5407,8 @@ export function ThreePanelInterface() {
       };
 
       // 启动平滑动画循环
+      let lastFlushAt = 0;
+      const FLUSH_INTERVAL_MS = 50; // 节流：重解析/重渲染整段文本开销较大，限制到每 ~50ms 一次
       const loop = () => {
         const pending = aiPendingContentRef.current;
         const displayed = aiDisplayedContentRef.current;
@@ -5381,9 +5416,9 @@ export function ThreePanelInterface() {
         if (displayed !== pending) {
           const diff = pending.length - displayed.length;
           // 若 pending 比 displayed 短（理论不应发生），或差异极小，则直接同步
+          let nextDisplayed: string;
           if (diff < 0) {
-            aiDisplayedContentRef.current = pending;
-            flushAiMessage(pending);
+            nextDisplayed = pending;
           } else {
             // 自适应速度：
             // 如果落后很多（网络卡顿后突然涌入），则步进大一些以快速追赶
@@ -5391,12 +5426,15 @@ export function ThreePanelInterface() {
             // min=1 保证不卡死，max 限制瞬时渲染量
             // Math.ceil(diff / 10) 意味着每帧追赶 10% 的差距 -> 渐进式平滑
             const step = Math.max(1, Math.ceil(diff / 5));
+            nextDisplayed = pending.slice(0, displayed.length + step);
+          }
+          aiDisplayedContentRef.current = nextDisplayed;
 
-            const next = pending.slice(0, displayed.length + step);
-            aiDisplayedContentRef.current = next;
-            flushAiMessage(next);
-
-
+          const now =
+            typeof performance !== "undefined" ? performance.now() : Date.now();
+          if (now - lastFlushAt >= FLUSH_INTERVAL_MS) {
+            lastFlushAt = now;
+            flushAiMessage(nextDisplayed);
           }
         }
         streamRafRef.current = requestAnimationFrame(loop);
@@ -5466,6 +5504,30 @@ export function ThreePanelInterface() {
     } catch (error) {
       if ((error as Error)?.name !== "AbortError") {
         console.error("Error sending message:", error);
+        toast({
+          description: textLabels.streamInterrupted,
+          variant: "destructive",
+        });
+        setMessages((prev) => {
+          const idx = prev.findIndex((m) => m.id === aiMsgId);
+          if (idx >= 0) {
+            const next = [...prev];
+            next[idx] = {
+              ...next[idx],
+              content: `${next[idx].content}\n\n> ${textLabels.streamInterrupted}`,
+            };
+            return next;
+          }
+          return [
+            ...prev,
+            {
+              id: aiMsgId,
+              sender: "ai",
+              content: `\n\n> ${textLabels.streamInterrupted}`,
+              timestamp: new Date(),
+            },
+          ];
+        });
       }
       setIsTyping(false);
       setStreamingMessageId(null);
@@ -6190,8 +6252,11 @@ export function ThreePanelInterface() {
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
                     <h1 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
-                      Assistant
+                      {textLabels.appTitle}
                     </h1>
+                    <span className="text-xs text-gray-400 dark:text-gray-500">
+                      {textLabels.appSubtitle}
+                    </span>
                     {isTyping && (
                       <Badge variant="secondary" className="rounded-full px-2.5 py-0.5 text-xs">
                         <RefreshCw className="mr-1 h-3 w-3 animate-spin" />
@@ -6644,7 +6709,7 @@ export function ThreePanelInterface() {
                                   </div>
                                   <div className="mt-1 flex items-center justify-between gap-2 text-[11px] text-gray-500 dark:text-gray-400">
                                     <span className="truncate">{formatFileSize(file.size)}</span>
-                                    <Badge variant="secondary" className="rounded-full px-1.5 py-0 text-[10px]">
+                                    <Badge variant="secondary" className="rounded-full px-1.5 py-0 text-xs">
                                       {isGeneratedWorkspaceFile(file)
                                         ? textLabels.generated
                                         : textLabels.uploaded}
