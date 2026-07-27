@@ -183,40 +183,6 @@ def cleanup_idle_containers() -> None:
         _cleanup_idle_session_containers()
 
 
-def remove_orphan_managed_containers() -> None:
-    """Remove managed containers left behind by a previous backend process.
-
-    Only runs when docker_stop_on_shutdown is enabled: it completes the same
-    contract for backends that crashed before their shutdown hook could run.
-    """
-    if not settings.use_docker_execution or not settings.docker_stop_on_shutdown:
-        return
-    completed = _run_docker_command(
-        [
-            "ps",
-            "-a",
-            "--filter",
-            f"label={MANAGED_LABEL_KEY}=true",
-            "--format",
-            "{{.Names}}",
-        ],
-        check=False,
-        timeout=30,
-    )
-    if completed.returncode != 0:
-        return
-    orphan_names = [name for name in (completed.stdout or "").split() if name]
-    with _DOCKER_LOCK:
-        tracked = {state.container_name for state in _SESSION_CONTAINERS.values()}
-        for name in orphan_names:
-            if name in tracked:
-                continue
-            try:
-                _remove_container(name, remove=True)
-            except RuntimeError:
-                continue
-
-
 def ensure_execution_backend_ready(session_id: str | None = None) -> None:
     if not settings.use_docker_execution or not session_id:
         return

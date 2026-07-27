@@ -15,7 +15,6 @@ from .routers.session import router as session_router
 from .routers.workspace import router as workspace_router
 from .services.docker_executor import (
     cleanup_idle_containers,
-    remove_orphan_managed_containers,
     shutdown_execution_backend,
     validate_execution_backend_configuration,
 )
@@ -37,10 +36,6 @@ async def _idle_container_reaper() -> None:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     validate_execution_backend_configuration()
-    try:
-        await run_in_threadpool(remove_orphan_managed_containers)
-    except Exception as exc:  # pragma: no cover - best-effort sweep
-        logger.warning("orphan container sweep failed: %s", exc)
     reaper_task = asyncio.create_task(_idle_container_reaper())
     try:
         yield
