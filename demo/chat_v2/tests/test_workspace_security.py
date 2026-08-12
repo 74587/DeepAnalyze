@@ -63,6 +63,25 @@ class WorkspaceSecurityTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(HTTPException, "Workspace size"):
             await workspace.upload_files_to_workspace("session-1", [second])
 
+    def test_creates_reusable_sample_data_without_overwriting_user_file(self):
+        roomy_settings = replace(
+            self.settings,
+            workspace_max_bytes=100_000,
+            workspace_max_files=10,
+        )
+        with patch.object(workspace, "settings", roomy_settings):
+            first = workspace.create_sample_data("session-sample")
+            second = workspace.create_sample_data("session-sample")
+
+            self.assertEqual(first["file"]["path"], "retail_sales_demo.csv")
+            self.assertEqual(second["file"]["path"], "retail_sales_demo.csv")
+            self.assertIn("recommended_prompt", first)
+            content = (
+                workspace.resolve_workspace_root("session-sample")
+                / "retail_sales_demo.csv"
+            ).read_text(encoding="utf-8")
+            self.assertIn("2025-04,East,Partner", content)
+
 
 if __name__ == "__main__":
     unittest.main()

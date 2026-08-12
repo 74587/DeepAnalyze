@@ -98,6 +98,11 @@ async def upload_files(
     return await workspace_service.upload_files_to_workspace(session_id, files)
 
 
+@router.post("/workspace/sample")
+async def create_sample_data(session_id: str = Query("default")):
+    return workspace_service.create_sample_data(session_id)
+
+
 @router.delete("/workspace/clear")
 async def clear_workspace(session_id: str = Query("default")):
     return workspace_service.clear_workspace(session_id)

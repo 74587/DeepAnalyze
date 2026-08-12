@@ -879,6 +879,48 @@ async def upload_files_to_workspace(session_id: str, files: Iterable[UploadFile]
     }
 
 
+SAMPLE_DATA_FILENAME = "retail_sales_demo.csv"
+SAMPLE_DATA_CONTENT = """month,region,channel,revenue,cost,orders,satisfaction
+2025-01,North,Online,128000,76000,820,4.3
+2025-01,South,Retail,93000,61000,590,4.1
+2025-01,East,Partner,81000,59000,470,3.9
+2025-02,North,Online,136000,79000,870,4.4
+2025-02,South,Retail,97000,63000,605,4.0
+2025-02,East,Partner,78000,60000,455,3.7
+2025-03,North,Online,149000,83000,925,4.5
+2025-03,South,Retail,102000,66000,640,4.1
+2025-03,East,Partner,74000,61000,430,3.5
+2025-04,North,Online,158000,86000,970,4.6
+2025-04,South,Retail,108000,69000,675,4.2
+2025-04,East,Partner,69000,62000,395,3.2
+"""
+
+
+def create_sample_data(session_id: str) -> dict:
+    """在当前会话工作区创建可重复使用的轻量演示数据。"""
+    workspace_root = resolve_workspace_root(session_id)
+    target = workspace_root / SAMPLE_DATA_FILENAME
+    encoded = SAMPLE_DATA_CONTENT.encode("utf-8")
+
+    if target.exists() and target.read_bytes() != encoded:
+        target = uniquify_path(target)
+    if not target.exists():
+        target.write_bytes(encoded)
+
+    relative_path = target.relative_to(workspace_root).as_posix()
+    file_info = next(
+        item for item in list_workspace_files(session_id) if item["path"] == relative_path
+    )
+    return {
+        "message": "Sample data is ready",
+        "file": file_info,
+        "recommended_prompt": {
+            "zh": "分析示例销售数据的收入、利润率和订单趋势，找出表现最好与风险最高的区域及渠道，并生成一张趋势图和简短结论。",
+            "en": "Analyze revenue, margin, and order trends in the sample sales data. Identify the strongest and highest-risk regions and channels, then create a trend chart and a concise conclusion.",
+        },
+    }
+
+
 async def upload_files_to_dir(session_id: str, directory: str, files: Iterable[UploadFile]) -> dict:
     workspace_root = resolve_workspace_root(session_id)
     target_dir = resolve_user_workspace_path(session_id, directory)
