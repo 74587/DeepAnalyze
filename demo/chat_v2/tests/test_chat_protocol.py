@@ -76,6 +76,25 @@ class ChatProtocolIntegrationTest(unittest.TestCase):
         )
         self.assertEqual(len(reports), 1)
 
+    def test_format_drift_is_silently_normalized(self):
+        with patch.object(
+            chat,
+            "_iter_local_stream",
+            return_value=stream_text("Here is the result.\n<Answer>done</Answer>"),
+        ):
+            output = "".join(
+                chat.bot_stream(
+                    [{"role": "user", "content": "analyze"}],
+                    [],
+                    "session-normalized",
+                )
+            )
+        self.assertEqual(
+            output.split("\n<File>", 1)[0],
+            "<Analyze>Here is the result.</Analyze>\n<Answer>done</Answer>",
+        )
+        self.assertNotIn("Protocol Warning", output)
+
     def test_round_budget_stops_an_unfinished_workflow(self):
         limited_settings = replace(chat.settings, chat_max_rounds=1)
         with (

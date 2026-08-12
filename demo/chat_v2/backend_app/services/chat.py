@@ -20,7 +20,7 @@ from .docker_executor import ensure_execution_backend_ready
 from .action_protocol import (
     ProtocolValidationError,
     contains_completed_action,
-    validate_model_actions,
+    normalize_model_output,
 )
 from .workspace import (
     collect_file_info,
@@ -49,16 +49,6 @@ EXECUTE_RESULT_PREFIX = "# Execute Result\n"
 FIXED_MODEL_NAME = "DeepAnalyze-8B"
 _FENCE_WITH_INFO_RE = re.compile(r"```[ \t]*[\w.+-]*[ \t]*\r?\n(.*?)```", re.DOTALL)
 _FENCE_INLINE_RE = re.compile(r"```(?:python)?(.*?)```", re.DOTALL | re.IGNORECASE)
-PROTOCOL_REPAIR_PROMPT = (
-    "Your previous response did not follow the required output format: {error}. "
-    "Regenerate your response strictly as structured action blocks. Rules: "
-    "wrap ALL content inside <Analyze>, <Understand>, <Code>, or <Answer> tags; "
-    "no text outside the tags; every opened tag must be closed; end with exactly "
-    "one complete <Code> block (python code, to be executed) or one complete "
-    "<Answer> block (the final report)."
-)
-
-
 @dataclass(frozen=True)
 class ChatRuntimeConfig:
     provider: str = "local"
@@ -431,7 +421,6 @@ def bot_stream(
         finished = False
         round_count = 0
         code_execution_count = 0
-        protocol_repairs_left = settings.chat_protocol_repair_attempts
         started_at = time.monotonic()
         stop_event.clear()
         while not finished:
@@ -481,7 +470,6 @@ def bot_stream(
                             )
                             finished = True
                             break
-                        yield delta
                     if contains_completed_action(cur_res, "Answer"):
                         break
             except (httpx.HTTPError, openai.OpenAIError) as exc:
@@ -492,27 +480,14 @@ def bot_stream(
                 break
 
             try:
-                actions = validate_model_actions(cur_res)
+                normalized_res, actions = normalize_model_output(cur_res)
             except ProtocolValidationError as exc:
-                # General-purpose LLMs occasionally drift from the action format
-                # (e.g. a conversational preamble). Instead of aborting the whole
-                # analysis, feed the error back once and let the model repair it.
-                if protocol_repairs_left > 0:
-                    protocol_repairs_left -= 1
-                    yield _execution_status_block(
-                        "Protocol Warning",
-                        f"{exc}; asking the model to reformat and continue",
-                    )
-                    conversation.append({"role": "assistant", "content": cur_res})
-                    conversation.append(
-                        {
-                            "role": "user",
-                            "content": PROTOCOL_REPAIR_PROMPT.format(error=exc),
-                        }
-                    )
-                    continue
                 yield _execution_status_block("Protocol Error", str(exc))
                 break
+            if normalized_res != cur_res.strip():
+                logger.info("normalized model action format for session %s", session_id)
+            yield normalized_res
+            cur_res = normalized_res
 
             terminal_action = actions[-1]
             if terminal_action.tag == "Answer":

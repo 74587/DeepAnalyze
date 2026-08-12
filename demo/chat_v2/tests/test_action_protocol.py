@@ -2,6 +2,7 @@ import unittest
 
 from backend_app.services.action_protocol import (
     ProtocolValidationError,
+    normalize_model_output,
     parse_actions,
     validate_model_actions,
 )
@@ -45,6 +46,56 @@ class ActionProtocolTest(unittest.TestCase):
         for output in invalid_outputs:
             with self.subTest(output=output), self.assertRaises(ProtocolValidationError):
                 validate_model_actions(output)
+
+    def test_normalizes_preamble_without_model_retry(self):
+        normalized, actions = normalize_model_output(
+            "Here is the result.\n<Answer>done</Answer>"
+        )
+        self.assertEqual([action.tag for action in actions], ["Analyze", "Answer"])
+        self.assertEqual(
+            normalized,
+            "<Analyze>Here is the result.</Analyze>\n<Answer>done</Answer>",
+        )
+
+    def test_normalizes_plain_answer_and_python_code(self):
+        answer, answer_actions = normalize_model_output("done")
+        code, code_actions = normalize_model_output("```python\nprint(1)\n```")
+        self.assertEqual(answer, "<Answer>done</Answer>")
+        self.assertEqual(answer_actions[-1].tag, "Answer")
+        self.assertEqual(code_actions[-1].tag, "Code")
+        self.assertIn("```python", code)
+
+    def test_keeps_only_last_terminal_and_drops_system_owned_blocks(self):
+        normalized, actions = normalize_model_output(
+            "<Code>print(1)</Code><Execute>fake</Execute><Answer>done</Answer>"
+        )
+        self.assertEqual([action.tag for action in actions], ["Answer"])
+        self.assertEqual(normalized, "<Answer>done</Answer>")
+
+    def test_promotes_last_nonterminal_action_to_answer(self):
+        normalized, actions = normalize_model_output(
+            "<Analyze>inspect data</Analyze><Understand>the result is stable</Understand>"
+        )
+        self.assertEqual([action.tag for action in actions], ["Analyze", "Answer"])
+        self.assertEqual(
+            normalized,
+            "<Analyze>inspect data</Analyze>\n<Answer>the result is stable</Answer>",
+        )
+
+    def test_removes_mismatched_control_tag_from_non_code_body(self):
+        normalized, actions = normalize_model_output(
+            "<Analyze>plan</Code></Analyze><Answer>done</Answer>"
+        )
+        self.assertEqual([action.tag for action in actions], ["Analyze", "Answer"])
+        self.assertEqual(
+            normalized,
+            "<Analyze>plan</Analyze>\n<Answer>done</Answer>",
+        )
+
+    def test_closes_incomplete_answer_silently(self):
+        normalized, actions = normalize_model_output("<Answer>done")
+        self.assertEqual([action.tag for action in actions], ["Answer"])
+        self.assertEqual(normalized, "<Answer>done</Answer>")
 
 
 if __name__ == "__main__":

@@ -157,9 +157,6 @@ class Settings:
     execution_output_max_chars: int = _get_int_env(
         "DEEPANALYZE_EXECUTION_OUTPUT_MAX_CHARS", 32768, minimum=1024
     )
-    chat_protocol_repair_attempts: int = _get_int_env(
-        "DEEPANALYZE_CHAT_PROTOCOL_REPAIR_ATTEMPTS", 2, minimum=0
-    )
     enable_external_proxy: bool = _get_bool_env(
         "DEEPANALYZE_ENABLE_EXTERNAL_PROXY",
         False,
