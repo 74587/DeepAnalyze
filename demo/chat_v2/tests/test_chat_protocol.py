@@ -84,7 +84,11 @@ class ChatProtocolIntegrationTest(unittest.TestCase):
         ):
             output = "".join(
                 chat.bot_stream(
-                    [{"role": "user", "content": "analyze"}],
+                    [
+                        {"role": "user", "content": "first question"},
+                        {"role": "assistant", "content": "<Answer>first</Answer>"},
+                        {"role": "user", "content": "analyze"},
+                    ],
                     [],
                     "session-normalized",
                 )
@@ -94,6 +98,53 @@ class ChatProtocolIntegrationTest(unittest.TestCase):
             "<Analyze>Here is the result.</Analyze>\n<Answer>done</Answer>",
         )
         self.assertNotIn("Protocol Warning", output)
+
+    def test_initial_response_gets_analyze_open_tag_when_plain_text_starts_it(self):
+        heywhale_shape = (
+            "Thinking before the action block.\n"
+            "</Analyze>\n<Answer>ok</Answer>"
+        )
+        with patch.object(
+            chat,
+            "_iter_local_stream",
+            return_value=stream_text(heywhale_shape),
+        ):
+            output = "".join(
+                chat.bot_stream(
+                    [{"role": "user", "content": "analyze"}],
+                    [],
+                    "session-initial-prefix",
+                )
+            )
+        self.assertIn(
+            "<Analyze>Thinking before the action block.\n</Analyze>",
+            output,
+        )
+        self.assertIn("<Answer>ok</Answer>", output)
+        self.assertNotIn("Protocol Error", output)
+
+    def test_follow_up_response_does_not_get_initial_analyze_tag(self):
+        heywhale_shape = (
+            "Thinking before the action block.\n"
+            "</Analyze>\n<Answer>ok</Answer>"
+        )
+        with patch.object(
+            chat,
+            "_iter_local_stream",
+            return_value=stream_text(heywhale_shape),
+        ):
+            output = "".join(
+                chat.bot_stream(
+                    [
+                        {"role": "user", "content": "first question"},
+                        {"role": "assistant", "content": "<Answer>first</Answer>"},
+                        {"role": "user", "content": "follow up"},
+                    ],
+                    [],
+                    "session-follow-up-no-prefix",
+                )
+            )
+        self.assertIn("[Protocol Error]", output)
 
     def test_round_budget_stops_an_unfinished_workflow(self):
         limited_settings = replace(chat.settings, chat_max_rounds=1)

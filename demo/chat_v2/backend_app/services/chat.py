@@ -49,6 +49,9 @@ EXECUTE_RESULT_PREFIX = "# Execute Result\n"
 FIXED_MODEL_NAME = "DeepAnalyze-8B"
 _FENCE_WITH_INFO_RE = re.compile(r"```[ \t]*[\w.+-]*[ \t]*\r?\n(.*?)```", re.DOTALL)
 _FENCE_INLINE_RE = re.compile(r"```(?:python)?(.*?)```", re.DOTALL | re.IGNORECASE)
+_ACTION_TAG_AT_START_RE = re.compile(
+    r"^\s*</?[A-Za-z][^>]*>",
+)
 @dataclass(frozen=True)
 class ChatRuntimeConfig:
     provider: str = "local"
@@ -128,6 +131,15 @@ def _normalize_temperature(value: Any) -> float:
     except (TypeError, ValueError):
         return 0.4
     return max(0.0, min(2.0, temperature))
+
+
+def _prefix_initial_analyze_tag(content: str) -> str:
+    """首轮输出未以已知动作标签开头时，只补齐 Analyze 开标签。"""
+    raw = content or ""
+    if not raw.strip() or _ACTION_TAG_AT_START_RE.match(raw):
+        return raw
+    leading_length = len(raw) - len(raw.lstrip())
+    return f"{raw[:leading_length]}<Analyze>{raw[leading_length:]}"
 
 
 def build_chat_runtime_config(payload: dict[str, Any] | None) -> ChatRuntimeConfig:
@@ -396,6 +408,9 @@ def bot_stream(
     stop_event = _get_or_create_stop_event(session_id)
     try:
         conversation = deepcopy(messages or [])
+        is_initial_conversation = not any(
+            message.get("role") == "assistant" for message in conversation
+        )
         workspace_paths = list(workspace or [])
         workspace_dir = get_session_workspace(session_id)
         Path(workspace_dir, "generated").mkdir(parents=True, exist_ok=True)
@@ -478,6 +493,9 @@ def bot_stream(
 
             if stop_event.is_set() or finished:
                 break
+
+            if is_initial_conversation and round_count == 1:
+                cur_res = _prefix_initial_analyze_tag(cur_res)
 
             try:
                 normalized_res, actions = normalize_model_output(cur_res)
