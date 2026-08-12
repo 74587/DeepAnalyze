@@ -146,6 +146,37 @@ class ChatProtocolIntegrationTest(unittest.TestCase):
             )
         self.assertIn("[Protocol Error]", output)
 
+    def test_heywhale_stream_uses_stop_sequences_and_restores_code_close_tag(self):
+        lines = [
+            'data: {"choices":[{"delta":{"content":"<Code>print(1)"},"finish_reason":null}]}',
+            'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
+            "data: [DONE]",
+        ]
+        response = Mock()
+        response.raise_for_status = Mock()
+        response.iter_lines.return_value = lines
+        stream_context = Mock()
+        stream_context.__enter__ = Mock(return_value=response)
+        stream_context.__exit__ = Mock(return_value=False)
+        client = Mock()
+        client.stream.return_value = stream_context
+        client_context = Mock()
+        client_context.__enter__ = Mock(return_value=client)
+        client_context.__exit__ = Mock(return_value=False)
+        runtime = chat.ChatRuntimeConfig(
+            provider="heywhale",
+            model="DeepAnalyze-8B",
+            api_key="test-key",
+            api_base=chat.HEYWHALE_API_BASE,
+        )
+
+        with patch.object(chat.httpx, "Client", return_value=client_context):
+            chunks = list(chat._iter_heywhale_stream([], runtime))
+
+        request_payload = client.stream.call_args.kwargs["json"]
+        self.assertEqual(request_payload["stop"], ["</Code>", "</Answer>"])
+        self.assertEqual("".join(delta or "" for delta, _ in chunks), "<Code>print(1)</Code>")
+
     def test_round_budget_stops_an_unfinished_workflow(self):
         limited_settings = replace(chat.settings, chat_max_rounds=1)
         with (

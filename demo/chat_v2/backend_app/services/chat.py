@@ -45,6 +45,7 @@ HEYWHALE_API_BASE = (
 HEYWHALE_BACKUP_CHAT_COMPLETIONS_URL = (
     "https://www.heywhale.com/api/model/services/69b7c9d028cbfe8349df5924/app/v1/chat/completions"
 )
+HEYWHALE_STOP_SEQUENCES = ["</Code>", "</Answer>"]
 EXECUTE_RESULT_PREFIX = "# Execute Result\n"
 FIXED_MODEL_NAME = "DeepAnalyze-8B"
 _FENCE_WITH_INFO_RE = re.compile(r"```[ \t]*[\w.+-]*[ \t]*\r?\n(.*?)```", re.DOTALL)
@@ -208,6 +209,7 @@ def _iter_heywhale_stream(
         "messages": conversation,
         "temperature": runtime_config.temperature,
         "stream": True,
+        "stop": HEYWHALE_STOP_SEQUENCES,
     }
 
     primary_url = f"{runtime_config.api_base.rstrip('/')}/chat/completions"
@@ -219,6 +221,7 @@ def _iter_heywhale_stream(
     with httpx.Client(timeout=timeout) as http_client:
         for idx, request_url in enumerate(request_urls):
             has_stream_output = False
+            streamed_content = ""
             try:
                 with http_client.stream(
                     "POST",
@@ -248,7 +251,20 @@ def _iter_heywhale_stream(
                         choice = (payload.get("choices") or [{}])[0]
                         delta = (choice.get("delta") or {}).get("content")
                         finish_reason = choice.get("finish_reason")
+                        if delta:
+                            streamed_content += delta
                         yield delta, {"choices": [{"finish_reason": finish_reason}]}
+                        if finish_reason == "stop":
+                            if (
+                                streamed_content.rfind("<Code>")
+                                > streamed_content.rfind("</Code>")
+                            ):
+                                yield "</Code>", {"choices": [{"finish_reason": None}]}
+                            elif (
+                                streamed_content.rfind("<Answer>")
+                                > streamed_content.rfind("</Answer>")
+                            ):
+                                yield "</Answer>", {"choices": [{"finish_reason": None}]}
                 return
             except httpx.HTTPError:
                 if has_stream_output or idx >= len(request_urls) - 1:
