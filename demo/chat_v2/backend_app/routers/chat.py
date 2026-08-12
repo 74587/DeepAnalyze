@@ -114,7 +114,7 @@ async def chat(body: dict = Body(...)):
             "provider": runtime_config.provider,
             "model": runtime_config.model,
             "temperature": runtime_config.temperature,
-            "additional_requirements": str(body.get("additional_requirements") or ""),
+            "system_prompt": str(body.get("system_prompt") or ""),
             "ui_language": body.get("ui_language", ""),
         },
     )

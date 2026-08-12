@@ -2,7 +2,6 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  appendAdditionalRequirements,
   buildSessionStorageKey,
   normalizeSessionMessages,
   toServerMessages,
@@ -38,21 +37,4 @@ test("selected paths update immutably", () => {
   const removed = toggleSelectedPath(added, "a.csv", false);
   assert.deepEqual([...original], ["a.csv"]);
   assert.deepEqual([...removed], ["b.csv"]);
-});
-
-test("additional requirements append only to the latest user message", () => {
-  const original = [
-    { role: "system", content: "base prompt" },
-    { role: "user", content: "first" },
-    { role: "assistant", content: "reply" },
-    { role: "user", content: "analyze data" },
-  ];
-  const updated = appendAdditionalRequirements(original, "Use Chinese charts");
-  assert.equal(updated[0].content, "base prompt");
-  assert.equal(updated[1].content, "first");
-  assert.equal(
-    updated[3].content,
-    "analyze data\n\n# Additional Requirements\nUse Chinese charts"
-  );
-  assert.equal(original[3].content, "analyze data");
 });

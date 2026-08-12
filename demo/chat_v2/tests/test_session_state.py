@@ -84,7 +84,7 @@ class SessionStateTest(unittest.TestCase):
         self.assertEqual(len(state["messages"]), 1)
         self.assertEqual(state["messages"][0]["content"], "complete")
 
-    def test_migrates_legacy_system_prompt_to_additional_requirements(self):
+    def test_persists_system_prompt_and_migrates_legacy_requirements(self):
         state = session_state.update_task_config(
             "session-migration",
             {
@@ -93,8 +93,13 @@ class SessionStateTest(unittest.TestCase):
             },
         )
         task = state["task_config"]
-        self.assertEqual(task["additional_requirements"], "Use concise Chinese")
-        self.assertNotIn("system_prompt", task)
+        self.assertEqual(task["system_prompt"], "Use concise Chinese")
+
+        migrated = session_state.update_task_config(
+            "session-migration-legacy",
+            {"additional_requirements": "Use concise Chinese"},
+        )
+        self.assertEqual(migrated["task_config"]["system_prompt"], "Use concise Chinese")
 
 
 if __name__ == "__main__":
