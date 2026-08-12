@@ -38,6 +38,7 @@ import remarkGfm from "remark-gfm";
 import { API_URLS, API_CONFIG, buildApiUrlWithParams } from "@/lib/config";
 import { buildLineDiff } from "@/lib/code-ai-edit";
 import {
+  appendAdditionalRequirements,
   buildSessionStorageKey,
   normalizeSessionMessages,
   serializeSessionMessages,
@@ -114,7 +115,6 @@ import {
 } from "@/components/ui/alert-dialog";
 import {
   DATA_ANALYSIS_PROMPT_PRESETS,
-  DEFAULT_SYSTEM_PROMPT,
   type UILanguage,
 } from "@/lib/prompt-presets";
 
@@ -221,6 +221,7 @@ interface SessionStatePayload {
     model?: string;
     temperature?: number;
     system_prompt?: string;
+    additional_requirements?: string;
     ui_language?: UILanguage;
   };
 }
@@ -807,9 +808,11 @@ export function ThreePanelInterface() {
         setUiLanguage(savedLanguage);
       }
 
-      const savedSystemPrompt = localStorage.getItem("deepanalyze.systemPrompt");
-      if (savedSystemPrompt) {
-        setSystemPrompt(savedSystemPrompt);
+      const savedRequirements =
+        localStorage.getItem("deepanalyze.additionalRequirements") ||
+        localStorage.getItem("deepanalyze.systemPrompt");
+      if (savedRequirements) {
+        setAdditionalRequirements(savedRequirements);
       }
 
       const savedProvider = localStorage.getItem("deepanalyze.llmProvider");
@@ -1071,7 +1074,7 @@ export function ThreePanelInterface() {
   );
   const fileSelectionInitializedRef = useRef(false);
   const [uiLanguage, setUiLanguage] = useState<UILanguage>("en");
-  const [systemPrompt, setSystemPrompt] = useState(DEFAULT_SYSTEM_PROMPT);
+  const [additionalRequirements, setAdditionalRequirements] = useState("");
   const [llmProvider, setLlmProvider] = useState<LlmProvider>("local");
   const [customModelName, setCustomModelName] = useState(DEFAULT_MODEL_NAME);
   const [modelTemperature, setModelTemperature] = useState("0.4");
@@ -1090,8 +1093,11 @@ export function ThreePanelInterface() {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    localStorage.setItem("deepanalyze.systemPrompt", systemPrompt);
-  }, [systemPrompt]);
+    localStorage.setItem(
+      "deepanalyze.additionalRequirements",
+      additionalRequirements
+    );
+  }, [additionalRequirements]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -1279,7 +1285,9 @@ export function ThreePanelInterface() {
           if (typeof task.temperature === "number") {
             setModelTemperature(String(task.temperature));
           }
-          if (task.system_prompt) setSystemPrompt(task.system_prompt);
+          const restoredRequirements =
+            task.additional_requirements || task.system_prompt || "";
+          if (restoredRequirements) setAdditionalRequirements(restoredRequirements);
           if (task.ui_language === "zh" || task.ui_language === "en") {
             setUiLanguage(task.ui_language);
           }
@@ -1514,11 +1522,12 @@ export function ThreePanelInterface() {
         uiLanguage === "zh"
           ? "切换预设时，输入框会自动同步对应内容"
           : "Selecting a preset automatically updates the input box.",
-      systemPrompt: "System Prompt",
-      systemPromptPlaceholder:
+      additionalRequirements:
+        uiLanguage === "zh" ? "附加要求" : "Additional Requirements",
+      additionalRequirementsPlaceholder:
         uiLanguage === "zh"
-          ? "可选：在这里填写 system prompt，不填则为空"
-          : "Optional: write a system prompt here, or leave it empty.",
+          ? "可选：作为用户要求追加到每次任务中，不修改原始 System Prompt"
+          : "Optional: appended to each user request without changing the original system prompt.",
       bundleDownload:
         uiLanguage === "zh" ? "分类打包下载" : "Bundle Downloads",
       noFiles:
@@ -1544,8 +1553,8 @@ export function ThreePanelInterface() {
         uiLanguage === "zh" ? "对话框移到左栏" : "Move Dialog Left",
       presetsDescription:
         uiLanguage === "zh" ? "预设会同步到输入框" : "Presets sync to the input box",
-      emptySystemPrompt:
-        uiLanguage === "zh" ? "默认留空" : "Default empty",
+      clearAdditionalRequirements:
+        uiLanguage === "zh" ? "清空" : "Clear",
       modelProvider: uiLanguage === "zh" ? "模型来源" : "Model Provider",
       providerLocal: uiLanguage === "zh" ? "本地" : "Local",
       providerHeywhale: uiLanguage === "zh" ? "和鲸 API" : "HeyWhale API",
@@ -1794,10 +1803,8 @@ export function ThreePanelInterface() {
     return Math.min(2, Math.max(0, parsed));
   }, [modelTemperature]);
 
-  const effectiveSystemPrompt = useMemo(() => {
-    const trimmed = systemPrompt.trim();
-    let mergedPrompt = trimmed;
-
+  const runtimeSystemPrompt = useMemo(() => {
+    let mergedPrompt = "";
     if (llmProvider === "custom") {
       const customPrefix =
         uiLanguage === "zh"
@@ -1827,7 +1834,7 @@ export function ThreePanelInterface() {
     }
 
     return mergedPrompt;
-  }, [customModelName, llmProvider, systemPrompt, uiLanguage]);
+  }, [customModelName, llmProvider, uiLanguage]);
 
   const latestTaskInstruction = useMemo(() => {
     for (let index = messages.length - 1; index >= 0; index -= 1) {
@@ -1850,7 +1857,7 @@ export function ThreePanelInterface() {
             provider: llmProvider,
             model: llmProvider === "custom" ? customModelName : DEFAULT_MODEL_NAME,
             temperature: normalizedTemperature,
-            system_prompt: effectiveSystemPrompt,
+            additional_requirements: additionalRequirements.trim(),
             ui_language: uiLanguage,
           },
         }),
@@ -1860,7 +1867,7 @@ export function ThreePanelInterface() {
   }, [
     chatLoaded,
     customModelName,
-    effectiveSystemPrompt,
+    additionalRequirements,
     latestTaskInstruction,
     llmProvider,
     normalizedTemperature,
@@ -5292,14 +5299,24 @@ export function ThreePanelInterface() {
           api_base: llmProvider === "custom" ? customApiBase.trim() : "",
           temperature: normalizedTemperature,
           ui_language: uiLanguage,
+          additional_requirements: additionalRequirements.trim(),
           workspace: Array.from(selectedAnalysisFiles),
           assistant_message_id: aiMsgId,
-          messages: [
-            ...(effectiveSystemPrompt
+          session_messages: [...messages, newMessage]
+            .filter((message) => !message.localOnly)
+            .map((message) => ({
+              id: message.id,
+              role: message.sender === "user" ? "user" : "assistant",
+              content: message.content,
+              timestamp: message.timestamp,
+              attachments: message.attachments || [],
+            })),
+          messages: appendAdditionalRequirements([
+            ...(runtimeSystemPrompt
               ? [
                   {
                     role: "system",
-                    content: effectiveSystemPrompt,
+                    content: runtimeSystemPrompt,
                   },
                 ]
               : []),
@@ -5313,7 +5330,7 @@ export function ThreePanelInterface() {
               role: "user",
               content: inputValue,
             },
-          ],
+          ], additionalRequirements),
           stream: true,
           session_id: sessionId,
         }),
@@ -5775,22 +5792,22 @@ export function ThreePanelInterface() {
                     <div>
                       <div className="mb-1.5 flex items-center justify-between">
                         <div className="text-xs font-medium text-gray-700 dark:text-gray-300">
-                          {textLabels.systemPrompt}
+                          {textLabels.additionalRequirements}
                         </div>
                         <Button
                           variant="ghost"
                           size="sm"
                           className="h-7 text-xs text-gray-500"
-                          onClick={() => setSystemPrompt(DEFAULT_SYSTEM_PROMPT)}
+                          onClick={() => setAdditionalRequirements("")}
                         >
-                          {textLabels.emptySystemPrompt}
+                          {textLabels.clearAdditionalRequirements}
                         </Button>
                       </div>
                       <Textarea
-                        value={systemPrompt}
-                        onChange={(e) => setSystemPrompt(e.target.value)}
+                        value={additionalRequirements}
+                        onChange={(e) => setAdditionalRequirements(e.target.value)}
                         className="min-h-20 rounded-2xl border-gray-200 dark:border-gray-800 bg-white dark:bg-black text-sm"
-                        placeholder={textLabels.systemPromptPlaceholder}
+                        placeholder={textLabels.additionalRequirementsPlaceholder}
                       />
                     </div>
                     {moveDialogToLeftPanel &&

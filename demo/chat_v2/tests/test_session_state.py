@@ -84,6 +84,18 @@ class SessionStateTest(unittest.TestCase):
         self.assertEqual(len(state["messages"]), 1)
         self.assertEqual(state["messages"][0]["content"], "complete")
 
+    def test_migrates_legacy_system_prompt_to_additional_requirements(self):
+        state = session_state.update_task_config(
+            "session-migration",
+            {
+                "instruction": "analyze",
+                "system_prompt": "Use concise Chinese",
+            },
+        )
+        task = state["task_config"]
+        self.assertEqual(task["additional_requirements"], "Use concise Chinese")
+        self.assertNotIn("system_prompt", task)
+
 
 if __name__ == "__main__":
     unittest.main()

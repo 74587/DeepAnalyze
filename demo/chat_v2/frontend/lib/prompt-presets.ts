@@ -12,8 +12,6 @@ export interface PromptPreset {
   prompt: LocalizedText;
 }
 
-export const DEFAULT_SYSTEM_PROMPT = "";
-
 export const DATA_ANALYSIS_PROMPT_PRESETS: PromptPreset[] = [
   {
     id: "eda",

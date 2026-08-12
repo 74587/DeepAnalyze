@@ -49,10 +49,24 @@ function toggleSelectedPath(currentPaths, path, selected) {
   return next;
 }
 
+function appendAdditionalRequirements(messages, requirements) {
+  const trimmed = String(requirements || "").trim();
+  const next = Array.isArray(messages) ? messages.map((message) => ({ ...message })) : [];
+  if (!trimmed) return next;
+  for (let index = next.length - 1; index >= 0; index -= 1) {
+    if (next[index]?.role !== "user") continue;
+    const content = String(next[index].content || "").trimEnd();
+    next[index].content = `${content}\n\n# Additional Requirements\n${trimmed}`;
+    break;
+  }
+  return next;
+}
+
 module.exports = {
   buildSessionStorageKey,
   normalizeSessionMessages,
   serializeSessionMessages,
   toServerMessages,
   toggleSelectedPath,
+  appendAdditionalRequirements,
 };

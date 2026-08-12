@@ -14,3 +14,7 @@ export function toggleSelectedPath(
   path: string,
   selected: boolean
 ): Set<string>;
+export function appendAdditionalRequirements(
+  messages: Array<{ role: string; content?: string }>,
+  requirements: string
+): Array<{ role: string; content?: string }>;
