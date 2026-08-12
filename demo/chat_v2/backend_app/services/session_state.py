@@ -198,7 +198,11 @@ def update_task_config(
         "provider": str(task_config.get("provider") or "local"),
         "model": str(task_config.get("model") or ""),
         "temperature": task_config.get("temperature"),
-        "system_prompt": str(task_config.get("system_prompt") or ""),
+        "additional_requirements": str(
+            task_config.get("additional_requirements")
+            or task_config.get("system_prompt")
+            or ""
+        ),
         "ui_language": str(task_config.get("ui_language") or ""),
         "updated_at": _utc_now(),
     }

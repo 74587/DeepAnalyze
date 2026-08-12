@@ -87,6 +87,9 @@ async def execute_code_api(request: dict):
 @router.post("/chat/completions")
 async def chat(body: dict = Body(...)):
     messages = body.get("messages", [])
+    session_messages = body.get("session_messages")
+    if not isinstance(session_messages, list):
+        session_messages = messages
     requested_workspace = body.get("workspace")
     workspace = requested_workspace if isinstance(requested_workspace, list) else []
     session_id = validate_session_id(body.get("session_id", "default"))
@@ -95,18 +98,10 @@ async def chat(body: dict = Body(...)):
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    system_prompt = next(
-        (
-            str(message.get("content") or "")
-            for message in messages
-            if message.get("role") == "system"
-        ),
-        "",
-    )
     latest_instruction = next(
         (
             str(message.get("content") or "")
-            for message in reversed(messages)
+            for message in reversed(session_messages)
             if message.get("role") == "user"
         ),
         "",
@@ -119,7 +114,7 @@ async def chat(body: dict = Body(...)):
             "provider": runtime_config.provider,
             "model": runtime_config.model,
             "temperature": runtime_config.temperature,
-            "system_prompt": system_prompt,
+            "additional_requirements": str(body.get("additional_requirements") or ""),
             "ui_language": body.get("ui_language", ""),
         },
     )
@@ -128,7 +123,7 @@ async def chat(body: dict = Body(...)):
         if isinstance(requested_workspace, list)
         else None
     )
-    replace_messages(session_id, messages)
+    replace_messages(session_id, session_messages)
     assistant_message_id = str(
         body.get("assistant_message_id") or f"assistant-{datetime.now().timestamp()}"
     )
