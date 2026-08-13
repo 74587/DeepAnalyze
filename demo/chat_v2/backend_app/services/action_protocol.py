@@ -221,3 +221,20 @@ def contains_completed_action(content: str, tag: str) -> bool:
         return False
     masked = mask_backticked_content(content or "")
     return f"</{tag}>" in masked
+
+
+def find_completed_action_end(
+    content: str,
+    tags: tuple[str, ...] = ("Code", "Answer"),
+) -> int | None:
+    """返回内容中第一个完整终止动作的边界位置。"""
+    masked = mask_backticked_content(content or "")
+    boundaries = []
+    for tag in tags:
+        if tag not in ACTION_TAGS:
+            continue
+        close_tag = f"</{tag}>"
+        close_index = masked.find(close_tag)
+        if close_index >= 0:
+            boundaries.append(close_index + len(close_tag))
+    return min(boundaries) if boundaries else None

@@ -19,7 +19,7 @@ from .execution_service import execute_managed_code
 from .docker_executor import ensure_execution_backend_ready
 from .action_protocol import (
     ProtocolValidationError,
-    contains_completed_action,
+    find_completed_action_end,
     normalize_model_output,
 )
 from .workspace import (
@@ -52,6 +52,9 @@ _FENCE_WITH_INFO_RE = re.compile(r"```[ \t]*[\w.+-]*[ \t]*\r?\n(.*?)```", re.DOT
 _FENCE_INLINE_RE = re.compile(r"```(?:python)?(.*?)```", re.DOTALL | re.IGNORECASE)
 _ACTION_TAG_AT_START_RE = re.compile(
     r"^\s*</?[A-Za-z][^>]*>",
+)
+_MODEL_ACTION_TAG_AT_START_RE = re.compile(
+    r"^<(?:Analyze|Understand|Code|Answer)>",
 )
 @dataclass(frozen=True)
 class ChatRuntimeConfig:
@@ -482,6 +485,8 @@ def bot_stream(
                 )
             )
             try:
+                stream_model_output = None
+                pending_model_deltas: list[str] = []
                 for delta, chunk in stream_iter:
                     if stop_event.is_set():
                         break
@@ -501,7 +506,21 @@ def bot_stream(
                             )
                             finished = True
                             break
-                    if contains_completed_action(cur_res, "Answer"):
+                        if stream_model_output is None:
+                            pending_model_deltas.append(delta)
+                            leading = cur_res.lstrip()
+                            if leading.startswith("<") and ">" not in leading:
+                                continue
+                            stream_model_output = bool(
+                                _MODEL_ACTION_TAG_AT_START_RE.match(leading)
+                            )
+                        if stream_model_output:
+                            if pending_model_deltas:
+                                yield from pending_model_deltas
+                                pending_model_deltas.clear()
+                            else:
+                                yield delta
+                    if find_completed_action_end(cur_res) is not None:
                         break
             except (httpx.HTTPError, openai.OpenAIError) as exc:
                 yield _execution_status_block("Model Error", str(exc))
@@ -520,7 +539,9 @@ def bot_stream(
                 break
             if normalized_res != cur_res.strip():
                 logger.info("normalized model action format for session %s", session_id)
-            yield normalized_res
+            if not stream_model_output:
+                # 普通文本或格式漂移响应需要先规范化后展示；符合协议的标签响应已在上面逐增量转发。
+                yield normalized_res
             cur_res = normalized_res
 
             terminal_action = actions[-1]

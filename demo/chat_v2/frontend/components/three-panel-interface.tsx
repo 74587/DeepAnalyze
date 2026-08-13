@@ -57,6 +57,12 @@ import {
   toggleSelectedPath,
 } from "@/lib/session-state";
 import {
+  countWorkspaceFiles,
+  filterWorkspaceFiles,
+  isGeneratedWorkspaceFile,
+  normalizeWorkspacePath,
+} from "@/lib/workspace-files";
+import {
   Dialog,
   DialogContent,
   DialogHeader,
@@ -1194,9 +1200,6 @@ export function ThreePanelInterface() {
   const scrollRafRef = useRef<number | null>(null);
   const stickToBottomRef = useRef(true);
   // const aiUpdateTimerRef = useRef<number | null>(null); // Removed in favor of RAF
-  const aiPendingContentRef = useRef<string>("");
-  const aiDisplayedContentRef = useRef<string>("");
-  const streamRafRef = useRef<number | null>(null);
   const streamAbortControllerRef = useRef<AbortController | null>(null);
   const workspaceFilesAbortRef = useRef<AbortController | null>(null);
   const workspaceFilesLoadingRef = useRef(false);
@@ -1701,64 +1704,16 @@ export function ThreePanelInterface() {
 
   const selectedPresetPrompt = selectedPreset?.prompt[uiLanguage] || "";
 
-  const normalizeWorkspacePath = useCallback((path?: string | null) => {
-    return String(path || "")
-      .replace(/\\/g, "/")
-      .replace(/^\/+/, "")
-      .trim();
-  }, []);
-
-  const isGeneratedPath = useCallback(
-    (path?: string | null) => {
-      const normalized = normalizeWorkspacePath(path);
-      return normalized === "generated" || normalized.startsWith("generated/");
-    },
-    [normalizeWorkspacePath]
-  );
-
-  const isSessionRootFilePath = useCallback(
-    (path?: string | null) => {
-      const normalized = normalizeWorkspacePath(path);
-      return !!normalized && !normalized.includes("/");
-    },
-    [normalizeWorkspacePath]
-  );
-
-  const isGeneratedDirectFilePath = useCallback(
-    (path?: string | null) => {
-      const normalized = normalizeWorkspacePath(path);
-      return /^generated\/[^/]+$/.test(normalized);
-    },
-    [normalizeWorkspacePath]
-  );
-
-  const generatedDirectNameSet = useMemo(() => {
-    const set = new Set<string>();
-    workspaceFiles.forEach((file) => {
-      if (isGeneratedDirectFilePath(file.path)) {
-        set.add(String(file.name || "").toLowerCase());
-      }
-    });
-    return set;
-  }, [isGeneratedDirectFilePath, workspaceFiles]);
-
   const rightPanelSourceFiles = useMemo(
-    () => workspaceFiles.filter((file) => isSessionRootFilePath(file.path)),
-    [isSessionRootFilePath, workspaceFiles]
-  );
-
-  const isGeneratedWorkspaceFile = useCallback(
-    (file?: Pick<WorkspaceFile, "path" | "name"> | null) => {
-      if (!file) return false;
-      if (isGeneratedDirectFilePath(file.path)) {
-        return true;
-      }
-      if (!isSessionRootFilePath(file.path)) {
-        return false;
-      }
-      return generatedDirectNameSet.has(String(file.name || "").toLowerCase());
-    },
-    [generatedDirectNameSet, isGeneratedDirectFilePath, isSessionRootFilePath]
+    () =>
+      workspaceFiles.filter((file) => {
+        const normalized = String(file.path || "")
+          .replace(/\\/g, "/")
+          .replace(/^\/+/, "")
+          .trim();
+        return !!normalized && !normalized.includes("/");
+      }),
+    [workspaceFiles]
   );
 
   useEffect(() => {
@@ -1785,9 +1740,10 @@ export function ThreePanelInterface() {
 
   const isGeneratedBundleFile = useCallback(
     (file?: Pick<WorkspaceFile, "path"> | null) => {
-      return isGeneratedPath(file?.path);
+      const normalized = normalizeWorkspacePath(file?.path);
+      return normalized === "generated" || normalized.startsWith("generated/");
     },
-    [isGeneratedPath]
+    []
   );
 
   const dedupeGeneratedDisplayFiles = useCallback((files: WorkspaceFile[]) => {
@@ -1817,7 +1773,7 @@ export function ThreePanelInterface() {
     });
 
     return result;
-  }, [isGeneratedBundleFile, isGeneratedWorkspaceFile]);
+  }, [isGeneratedBundleFile]);
 
   const normalizedTemperature = useMemo(() => {
     const parsed = Number.parseFloat(modelTemperature);
@@ -1931,65 +1887,19 @@ export function ThreePanelInterface() {
   }, [isGeneratedBundleFile, workspaceFiles]);
 
   const workspaceFileCounts = useMemo(() => {
-    const generated = rightPanelSourceFiles.filter((file) =>
-      isGeneratedWorkspaceFile(file)
-    ).length;
-    const all = rightPanelSourceFiles.length;
-    return {
-      uploaded: Math.max(all - generated, 0),
-      generated,
-      all,
-    };
-  }, [isGeneratedWorkspaceFile, rightPanelSourceFiles]);
+    return countWorkspaceFiles(rightPanelSourceFiles);
+  }, [rightPanelSourceFiles]);
 
   const filteredWorkspaceFiles = useMemo(() => {
-    const query = workspaceSearch.trim().toLowerCase();
-    const filtered = rightPanelSourceFiles
-      .filter((file) => {
-        const isGenerated = isGeneratedWorkspaceFile(file);
-        if (workspaceView === "generated" && !isGenerated) return false;
-        if (workspaceView === "uploaded" && isGenerated) return false;
-        if (!query) return true;
-        return (
-          file.name.toLowerCase().includes(query) ||
-          file.path.toLowerCase().includes(query)
-        );
-      })
-      .sort((a, b) => {
-        if (isGeneratedWorkspaceFile(a) !== isGeneratedWorkspaceFile(b)) {
-          return isGeneratedWorkspaceFile(a) ? 1 : -1;
-        }
-        return a.name.localeCompare(b.name);
-      });
-    return dedupeGeneratedDisplayFiles(filtered);
+    return dedupeGeneratedDisplayFiles(
+      filterWorkspaceFiles(rightPanelSourceFiles, workspaceView, workspaceSearch)
+    );
   }, [
     dedupeGeneratedDisplayFiles,
-    isGeneratedWorkspaceFile,
     rightPanelSourceFiles,
     workspaceSearch,
     workspaceView,
   ]);
-
-  const generatedResultFiles = useMemo(
-    () => {
-      const query = workspaceSearch.trim().toLowerCase();
-      return dedupeGeneratedDisplayFiles(
-        rightPanelSourceFiles.filter(
-          (file) =>
-            isGeneratedWorkspaceFile(file) &&
-            (!query ||
-              file.name.toLowerCase().includes(query) ||
-              file.path.toLowerCase().includes(query))
-        )
-      );
-    },
-    [
-      dedupeGeneratedDisplayFiles,
-      isGeneratedWorkspaceFile,
-      rightPanelSourceFiles,
-      workspaceSearch,
-    ]
-  );
 
   const getLocalizedPreviewType = useCallback(
     (
@@ -5477,14 +5387,6 @@ export function ThreePanelInterface() {
         },
       ]);
 
-      aiPendingContentRef.current = "";
-      aiDisplayedContentRef.current = "";
-
-      if (streamRafRef.current) {
-        cancelAnimationFrame(streamRafRef.current);
-        streamRafRef.current = null;
-      }
-
       // [修改] 用于在本地累积完整的消息内容
       let accumulatedMessage = "";
 
@@ -5511,40 +5413,10 @@ export function ThreePanelInterface() {
         }
       };
 
-      // 启动平滑动画循环
-      let lastFlushAt = 0;
-      const FLUSH_INTERVAL_MS = 50; // 节流：重解析/重渲染整段文本开销较大，限制到每 ~50ms 一次
-      const loop = () => {
-        const pending = aiPendingContentRef.current;
-        const displayed = aiDisplayedContentRef.current;
-
-        if (displayed !== pending) {
-          const diff = pending.length - displayed.length;
-          // 若 pending 比 displayed 短（理论不应发生），或差异极小，则直接同步
-          let nextDisplayed: string;
-          if (diff < 0) {
-            nextDisplayed = pending;
-          } else {
-            // 自适应速度：
-            // 如果落后很多（网络卡顿后突然涌入），则步进大一些以快速追赶
-            // 如果落后很少，则步进小，实现打字机效果
-            // min=1 保证不卡死，max 限制瞬时渲染量
-            // Math.ceil(diff / 10) 意味着每帧追赶 10% 的差距 -> 渐进式平滑
-            const step = Math.max(1, Math.ceil(diff / 5));
-            nextDisplayed = pending.slice(0, displayed.length + step);
-          }
-          aiDisplayedContentRef.current = nextDisplayed;
-
-          const now =
-            typeof performance !== "undefined" ? performance.now() : Date.now();
-          if (now - lastFlushAt >= FLUSH_INTERVAL_MS) {
-            lastFlushAt = now;
-            flushAiMessage(nextDisplayed);
-          }
-        }
-        streamRafRef.current = requestAnimationFrame(loop);
-      };
-      streamRafRef.current = requestAnimationFrame(loop);
+      const yieldToNextPaint = () =>
+        new Promise<void>((resolve) => {
+          window.requestAnimationFrame(() => resolve());
+        });
 
       let buffer = "";
 
@@ -5568,8 +5440,8 @@ export function ThreePanelInterface() {
 
             if (deltaContent) {
               accumulatedMessage += deltaContent;
-              // 仅更新 pending，不直接刷新 UI
-              aiPendingContentRef.current = accumulatedMessage;
+              flushAiMessage(accumulatedMessage);
+              await yieldToNextPaint();
             }
           } catch (e) {
             console.warn("JSON parse error for line:", trimmed, e);
@@ -5583,18 +5455,13 @@ export function ThreePanelInterface() {
           const deltaContent = json.choices?.[0]?.delta?.content;
           if (deltaContent) {
             accumulatedMessage += deltaContent;
-            aiPendingContentRef.current = accumulatedMessage;
+            flushAiMessage(accumulatedMessage);
+            await yieldToNextPaint();
           }
         } catch (e) { }
       }
 
-      // 流束后，确保最终内容完全显示
-      // 停止动画循环
-      if (streamRafRef.current) {
-        cancelAnimationFrame(streamRafRef.current);
-        streamRafRef.current = null;
-      }
-      // 强制同步最后状态
+      // 确保没有换行的最后一行也会同步到最终状态。
       flushAiMessage(accumulatedMessage);
       autoCollapseForContent(accumulatedMessage, aiMessageIndex);
 
@@ -6808,9 +6675,9 @@ export function ThreePanelInterface() {
                           {textLabels.clickToPreview}
                         </span>
                       </div>
-                      {generatedResultFiles.length ? (
+                      {filteredWorkspaceFiles.length ? (
                         <div className="flex flex-wrap gap-3 p-3">
-                          {generatedResultFiles.map((file, index) => {
+                          {filteredWorkspaceFiles.map((file, index) => {
                             const isImage = file.category === "image" && !!file.preview_url;
                             const imageUrl = resolveWorkspaceFileUrl(file.preview_url || file.download_url);
                             const ext = (file.extension || "").replace(/^\./, "").toUpperCase() || "FILE";

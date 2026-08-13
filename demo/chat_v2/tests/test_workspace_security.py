@@ -82,6 +82,20 @@ class WorkspaceSecurityTest(unittest.IsolatedAsyncioTestCase):
             ).read_text(encoding="utf-8")
             self.assertIn("2025-04,East,Partner", content)
 
+    def test_list_workspace_files_uses_explicit_generated_metadata(self):
+        root = workspace.resolve_workspace_root("session-classification")
+        (root / "report.md").write_text("uploaded", encoding="utf-8")
+        (root / "generated").mkdir()
+        (root / "generated" / "report.md").write_text("generated", encoding="utf-8")
+        workspace.register_generated_paths(
+            "session-classification", ["generated/report.md"]
+        )
+
+        files = workspace.list_workspace_files("session-classification")
+        by_path = {file["path"]: file for file in files}
+        self.assertFalse(by_path["report.md"]["is_generated"])
+        self.assertTrue(by_path["generated/report.md"]["is_generated"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -76,6 +76,40 @@ class ChatProtocolIntegrationTest(unittest.TestCase):
         )
         self.assertEqual(len(reports), 1)
 
+    def test_forwards_tagged_model_deltas_without_repacking_the_whole_round(self):
+        model_deltas = iter(
+            [
+                ("<Analyze>", {"choices": [{"finish_reason": None}]}),
+                ("plan", {"choices": [{"finish_reason": None}]}),
+                ("</Analyze><Code>", {"choices": [{"finish_reason": None}]}),
+                ("print('ok')", {"choices": [{"finish_reason": None}]}),
+                ("</Code>", {"choices": [{"finish_reason": "stop"}]}),
+                ("<Answer>done</Answer>", {"choices": [{"finish_reason": "stop"}]}),
+            ]
+        )
+        with (
+            patch.object(chat, "_iter_local_stream", return_value=model_deltas),
+            patch.object(
+                chat, "execute_managed_code", return_value=execution_outcome()
+            ),
+        ):
+            chunks = list(
+                chat.bot_stream(
+                    [{"role": "user", "content": "analyze"}],
+                    [],
+                    "session-delta-forwarding",
+                )
+            )
+
+        self.assertEqual(
+            chunks[:5],
+            ["<Analyze>", "plan", "</Analyze><Code>", "print('ok')", "</Code>"],
+        )
+        self.assertNotIn(
+            "<Analyze>plan</Analyze>\n<Code>print('ok')</Code>",
+            chunks,
+        )
+
     def test_format_drift_is_silently_normalized(self):
         with patch.object(
             chat,

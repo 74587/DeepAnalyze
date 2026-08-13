@@ -2,6 +2,7 @@ import unittest
 
 from backend_app.services.action_protocol import (
     ProtocolValidationError,
+    find_completed_action_end,
     normalize_model_output,
     parse_actions,
     validate_model_actions,
@@ -96,6 +97,13 @@ class ActionProtocolTest(unittest.TestCase):
         normalized, actions = normalize_model_output("<Answer>done")
         self.assertEqual([action.tag for action in actions], ["Answer"])
         self.assertEqual(normalized, "<Answer>done</Answer>")
+
+    def test_finds_terminal_boundary_without_matching_tags_inside_code(self):
+        content = "<Code>```python\nprint('</Answer>')\n```</Code>"
+        self.assertEqual(find_completed_action_end(content), len(content))
+
+    def test_does_not_find_boundary_for_incomplete_action(self):
+        self.assertIsNone(find_completed_action_end("<Code>print(1)"))
 
 
 if __name__ == "__main__":
