@@ -171,7 +171,14 @@ async def chat(body: dict = Body(...)):
         }
         yield json.dumps(end_chunk) + "\n"
 
-    return StreamingResponse(generate(), media_type="text/plain")
+    return StreamingResponse(
+        generate(),
+        media_type="application/x-ndjson",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.post("/chat/stop")

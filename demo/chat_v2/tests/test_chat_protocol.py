@@ -110,6 +110,58 @@ class ChatProtocolIntegrationTest(unittest.TestCase):
             chunks,
         )
 
+    def test_forwards_tagged_deltas_after_leading_whitespace(self):
+        model_responses = iter(
+            [
+                iter(
+                    [
+                        ("\n", {"choices": [{"finish_reason": None}]}),
+                        ("<Analyze>", {"choices": [{"finish_reason": None}]}),
+                        ("plan", {"choices": [{"finish_reason": None}]}),
+                        (
+                            "</Analyze><Code>",
+                            {"choices": [{"finish_reason": None}]},
+                        ),
+                        (
+                            "print('ok')",
+                            {"choices": [{"finish_reason": None}]},
+                        ),
+                        ("</Code>", {"choices": [{"finish_reason": "stop"}]}),
+                    ]
+                ),
+                iter(
+                    [
+                        (
+                            "<Answer>done</Answer>",
+                            {"choices": [{"finish_reason": "stop"}]},
+                        )
+                    ]
+                ),
+            ]
+        )
+        with (
+            patch.object(
+                chat,
+                "_iter_local_stream",
+                side_effect=lambda *args, **kwargs: next(model_responses),
+            ),
+            patch.object(
+                chat, "execute_managed_code", return_value=execution_outcome()
+            ),
+        ):
+            chunks = list(
+                chat.bot_stream(
+                    [{"role": "user", "content": "analyze"}],
+                    [],
+                    "session-leading-whitespace",
+                )
+            )
+
+        self.assertEqual(
+            chunks[:6],
+            ["\n", "<Analyze>", "plan", "</Analyze><Code>", "print('ok')", "</Code>"],
+        )
+
     def test_format_drift_is_silently_normalized(self):
         with patch.object(
             chat,

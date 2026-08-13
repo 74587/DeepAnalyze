@@ -509,6 +509,8 @@ def bot_stream(
                         if stream_model_output is None:
                             pending_model_deltas.append(delta)
                             leading = cur_res.lstrip()
+                            if not leading:
+                                continue
                             if leading.startswith("<") and ">" not in leading:
                                 continue
                             stream_model_output = bool(

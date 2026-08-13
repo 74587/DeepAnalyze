@@ -5461,7 +5461,7 @@ export function ThreePanelInterface() {
         } catch (e) { }
       }
 
-      // 确保没有换行的最后一行也会同步到最终状态。
+      // 确保缓存中的最后一段内容也写入消息状态。
       flushAiMessage(accumulatedMessage);
       autoCollapseForContent(accumulatedMessage, aiMessageIndex);
 
