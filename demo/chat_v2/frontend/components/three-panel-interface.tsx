@@ -260,6 +260,7 @@ type CodeDiffRow = {
 const PREVIEW_TABLE_PAGE_SIZE = 10;
 const BLOCKED_UPLOAD_EXTENSIONS = new Set(["py"]);
 const ACTIVE_SECTION_UPDATE_INTERVAL_MS = 80;
+const SCROLL_BOTTOM_THRESHOLD_PX = 8;
 const STREAMING_SECTION_FIXED_HEIGHT_PX = 140;
 const UPLOAD_ACCEPT_TYPES =
   ".csv,.tsv,.xlsx,.xls,.parquet,.sqlite,.db,.json,.txt,.log,.md,.markdown,.yml,.yaml,.pdf,image/*,.zip";
@@ -1196,7 +1197,6 @@ export function ThreePanelInterface() {
     null
   );
 
-  const lastScrollTimeRef = useRef(0);
   const scrollRafRef = useRef<number | null>(null);
   const stickToBottomRef = useRef(true);
   // const aiUpdateTimerRef = useRef<number | null>(null); // Removed in favor of RAF
@@ -1228,52 +1228,58 @@ export function ThreePanelInterface() {
     collapsedSectionsRef.current = collapsedSections;
   }, [collapsedSections]);
 
-  const scrollToBottom = useCallback((force: boolean = false) => {
-    const now = Date.now();
-    const timeSinceLastScroll = now - lastScrollTimeRef.current;
-
-    // 节流：默认 100ms，强制模式下忽略
-    if (!force && timeSinceLastScroll < 100) {
-      return;
-    }
+  const scrollToBottom = useCallback(() => {
+    if (!stickToBottomRef.current) return;
 
     if (scrollRafRef.current) {
       cancelAnimationFrame(scrollRafRef.current);
     }
 
     scrollRafRef.current = requestAnimationFrame(() => {
+      if (!stickToBottomRef.current) {
+        scrollRafRef.current = null;
+        return;
+      }
       if (messagesContainerRef.current) {
         const container = messagesContainerRef.current;
         // 使用 behavior: auto (默认) 以确保瞬间跳转，避免 smooth 带来的滞后叠加
         container.scrollTop = container.scrollHeight;
-        stickToBottomRef.current = true;
-        lastScrollTimeRef.current = Date.now();
       }
       scrollRafRef.current = null;
     });
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (scrollRafRef.current) {
+        cancelAnimationFrame(scrollRafRef.current);
+        scrollRafRef.current = null;
+      }
+    };
   }, []);
 
   // 输入完成后平滑滚动到底部（避免流式期间 setInterval 导致频繁布局计算）
   useEffect(() => {
     if (isTyping) return;
     if (!stickToBottomRef.current) return;
-    setTimeout(() => {
-      if (messagesContainerRef.current) {
-        messagesContainerRef.current.scrollTo({
-          top: messagesContainerRef.current.scrollHeight,
-          behavior: "smooth",
-        });
-      }
+    const timeoutId = window.setTimeout(() => {
+      const container = messagesContainerRef.current;
+      if (!container || !stickToBottomRef.current) return;
+      container.scrollTo({
+        top: container.scrollHeight,
+        behavior: "auto",
+      });
     }, 100);
+    return () => window.clearTimeout(timeoutId);
   }, [isTyping]);
 
   // 监听消息变化
   useEffect(() => {
     if (stickToBottomRef.current) {
-      // 流式输出时(streamingMessageId存在)强制滚动，消除滞后
-      scrollToBottom(!!streamingMessageId);
+      // 只有仍在底部时才跟随消息增量滚动。
+      scrollToBottom();
     }
-  }, [messages, scrollToBottom, streamingMessageId]);
+  }, [messages, scrollToBottom]);
 
   // 服务端 session state 是主存储，本地缓存仅用于离线回退。
   const [chatLoaded, setChatLoaded] = useState(false);
@@ -3319,18 +3325,6 @@ export function ThreePanelInterface() {
     [dedupeGeneratedDisplayFiles, isGeneratedWorkspaceFile, rightPanelSourceFiles]
   );
 
-  const handleMessagesScroll = useCallback(
-    (event: React.UIEvent<HTMLDivElement>) => {
-      const target = event.currentTarget;
-      const isBottom =
-        Math.abs(
-          target.scrollHeight - target.scrollTop - target.clientHeight
-        ) < 50;
-      stickToBottomRef.current = isBottom;
-    },
-    []
-  );
-
   const updateActiveSectionFromScroll = useCallback(() => {
     const container = messagesContainerRef.current;
     if (!container) return;
@@ -3374,7 +3368,7 @@ export function ThreePanelInterface() {
       // 只有用户当前在底部时才自动跟随输出
       const distanceToBottom =
         container.scrollHeight - container.scrollTop - container.clientHeight;
-      stickToBottomRef.current = distanceToBottom <= 24;
+      stickToBottomRef.current = distanceToBottom <= SCROLL_BOTTOM_THRESHOLD_PX;
 
       if (activeSectionRafRef.current) return;
       activeSectionRafRef.current = window.requestAnimationFrame(() => {
@@ -6381,7 +6375,6 @@ export function ThreePanelInterface() {
               {/* Chat Messages */}
               <div
                 ref={messagesContainerRef}
-                onScroll={handleMessagesScroll}
                 className="flex-1 min-h-0 min-w-0 overflow-y-scroll overflow-x-hidden px-4 py-4 pr-5 space-y-6 scrollbar-auto"
               >
                 {renderedMessages}

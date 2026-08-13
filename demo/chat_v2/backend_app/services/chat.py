@@ -20,6 +20,7 @@ from .docker_executor import ensure_execution_backend_ready
 from .action_protocol import (
     ProtocolValidationError,
     find_completed_action_end,
+    mask_backticked_content,
     normalize_model_output,
 )
 from .workspace import (
@@ -56,6 +57,10 @@ _ACTION_TAG_AT_START_RE = re.compile(
 _MODEL_ACTION_TAG_AT_START_RE = re.compile(
     r"^<(?:Analyze|Understand|Code|Answer)>",
 )
+_MODEL_ACTION_TAG_RE = re.compile(r"<(?:Analyze|Understand|Code|Answer)>")
+_MODEL_ACTION_CLOSE_TAG_RE = re.compile(r"</(?:Analyze|Understand|Code|Answer)>")
+
+
 @dataclass(frozen=True)
 class ChatRuntimeConfig:
     provider: str = "local"
@@ -144,6 +149,84 @@ def _prefix_initial_analyze_tag(content: str) -> str:
         return raw
     leading_length = len(raw) - len(raw.lstrip())
     return f"{raw[:leading_length]}<Analyze>{raw[leading_length:]}"
+
+
+@dataclass
+class _InitialStreamState:
+    synthetic_analyze_open: bool = False
+
+
+def _prepare_initial_stream_deltas(
+    deltas: list[str],
+    state: _InitialStreamState,
+) -> Iterable[str]:
+    raw = "".join(deltas)
+    leading = raw.lstrip()
+    if not leading or _MODEL_ACTION_TAG_AT_START_RE.match(leading):
+        yield from deltas
+        return
+
+    leading_length = len(raw) - len(leading)
+    cursor = 0
+    inserted = False
+    for delta in deltas:
+        next_cursor = cursor + len(delta)
+        if inserted or leading_length > next_cursor:
+            yield delta
+            cursor = next_cursor
+            continue
+
+        offset = max(0, leading_length - cursor)
+        before, after = delta[:offset], delta[offset:]
+        if before:
+            yield before
+        yield "<Analyze>"
+        state.synthetic_analyze_open = True
+        inserted = True
+        if after:
+            yield from _format_initial_stream_delta(after, state)
+        cursor = next_cursor
+
+    if not inserted:
+        yield "<Analyze>"
+        state.synthetic_analyze_open = True
+
+
+def _format_initial_stream_delta(
+    delta: str,
+    state: _InitialStreamState,
+) -> Iterable[str]:
+    if not state.synthetic_analyze_open:
+        yield delta
+        return
+
+    masked = mask_backticked_content(delta)
+    cursor = 0
+    while cursor < len(delta):
+        open_match = _MODEL_ACTION_TAG_RE.search(masked, cursor)
+        close_match = _MODEL_ACTION_CLOSE_TAG_RE.search(masked, cursor)
+        if open_match is None and close_match is None:
+            yield delta[cursor:]
+            return
+
+        if close_match is not None and (
+            open_match is None or close_match.start() <= open_match.start()
+        ):
+            if close_match.start() > cursor:
+                yield delta[cursor : close_match.start()]
+            yield delta[close_match.start() : close_match.end()]
+            state.synthetic_analyze_open = False
+            cursor = close_match.end()
+            if cursor < len(delta):
+                yield delta[cursor:]
+            return
+
+        if open_match.start() > cursor:
+            yield delta[cursor : open_match.start()]
+        yield "</Analyze>"
+        state.synthetic_analyze_open = False
+        yield delta[open_match.start() :]
+        return
 
 
 def build_chat_runtime_config(payload: dict[str, Any] | None) -> ChatRuntimeConfig:
@@ -475,6 +558,7 @@ def bot_stream(
             round_count += 1
 
             cur_res = ""
+            initial_stream_state = _InitialStreamState()
             stream_iter = (
                 _iter_heywhale_stream(conversation, runtime_config)
                 if runtime_config.provider == "heywhale"
@@ -515,13 +599,28 @@ def bot_stream(
                                 continue
                             stream_model_output = bool(
                                 _MODEL_ACTION_TAG_AT_START_RE.match(leading)
+                                or (is_initial_conversation and round_count == 1)
                             )
                         if stream_model_output:
                             if pending_model_deltas:
-                                yield from pending_model_deltas
+                                if is_initial_conversation and round_count == 1:
+                                    prepared_deltas = _prepare_initial_stream_deltas(
+                                        pending_model_deltas,
+                                        initial_stream_state,
+                                    )
+                                    for prepared_delta in prepared_deltas:
+                                        yield prepared_delta
+                                else:
+                                    yield from pending_model_deltas
                                 pending_model_deltas.clear()
                             else:
-                                yield delta
+                                if is_initial_conversation and round_count == 1:
+                                    yield from _format_initial_stream_delta(
+                                        delta,
+                                        initial_stream_state,
+                                    )
+                                else:
+                                    yield delta
                     if find_completed_action_end(cur_res) is not None:
                         break
             except (httpx.HTTPError, openai.OpenAIError) as exc:
@@ -530,6 +629,14 @@ def bot_stream(
 
             if stop_event.is_set() or finished:
                 break
+
+            if (
+                is_initial_conversation
+                and round_count == 1
+                and initial_stream_state.synthetic_analyze_open
+            ):
+                yield "</Analyze>"
+                initial_stream_state.synthetic_analyze_open = False
 
             if is_initial_conversation and round_count == 1:
                 cur_res = _prefix_initial_analyze_tag(cur_res)

@@ -162,6 +162,167 @@ class ChatProtocolIntegrationTest(unittest.TestCase):
             ["\n", "<Analyze>", "plan", "</Analyze><Code>", "print('ok')", "</Code>"],
         )
 
+    def test_forwards_initial_tagged_deltas_after_plain_prefix(self):
+        model_responses = iter(
+            [
+                iter(
+                    [
+                        (
+                            "I will inspect the data first.\n",
+                            {"choices": [{"finish_reason": None}]},
+                        ),
+                        ("<Analyze>", {"choices": [{"finish_reason": None}]}),
+                        ("plan", {"choices": [{"finish_reason": None}]}),
+                        (
+                            "</Analyze><Code>",
+                            {"choices": [{"finish_reason": None}]},
+                        ),
+                        ("print('ok')", {"choices": [{"finish_reason": None}]}),
+                        ("</Code>", {"choices": [{"finish_reason": "stop"}]}),
+                    ]
+                ),
+                iter(
+                    [
+                        (
+                            "<Answer>done</Answer>",
+                            {"choices": [{"finish_reason": "stop"}]},
+                        )
+                    ]
+                ),
+            ]
+        )
+        with (
+            patch.object(
+                chat,
+                "_iter_local_stream",
+                side_effect=lambda *args, **kwargs: next(model_responses),
+            ),
+            patch.object(
+                chat, "execute_managed_code", return_value=execution_outcome()
+            ),
+        ):
+            chunks = list(
+                chat.bot_stream(
+                    [{"role": "user", "content": "analyze"}],
+                    [],
+                    "session-initial-prefix-streaming",
+                )
+            )
+
+        self.assertEqual(
+            chunks[:8],
+            [
+                "<Analyze>",
+                "I will inspect the data first.\n",
+                "</Analyze>",
+                "<Analyze>",
+                "plan",
+                "</Analyze><Code>",
+                "print('ok')",
+                "</Code>",
+            ],
+        )
+
+    def test_forwards_initial_tagged_deltas_after_think_prefix(self):
+        model_responses = iter(
+            [
+                iter(
+                    [
+                        ("<think>", {"choices": [{"finish_reason": None}]}),
+                        (
+                            "inspect the available data",
+                            {"choices": [{"finish_reason": None}]},
+                        ),
+                        ("</think>\n", {"choices": [{"finish_reason": None}]}),
+                        ("<Analyze>", {"choices": [{"finish_reason": None}]}),
+                        ("plan", {"choices": [{"finish_reason": None}]}),
+                        (
+                            "</Analyze><Code>",
+                            {"choices": [{"finish_reason": None}]},
+                        ),
+                        ("print('ok')", {"choices": [{"finish_reason": None}]}),
+                        ("</Code>", {"choices": [{"finish_reason": "stop"}]}),
+                    ]
+                ),
+                iter(
+                    [
+                        (
+                            "<Answer>done</Answer>",
+                            {"choices": [{"finish_reason": "stop"}]},
+                        )
+                    ]
+                ),
+            ]
+        )
+        with (
+            patch.object(
+                chat,
+                "_iter_local_stream",
+                side_effect=lambda *args, **kwargs: next(model_responses),
+            ),
+            patch.object(
+                chat, "execute_managed_code", return_value=execution_outcome()
+            ),
+        ):
+            chunks = list(
+                chat.bot_stream(
+                    [{"role": "user", "content": "analyze"}],
+                    [],
+                    "session-initial-think-streaming",
+                )
+            )
+
+        self.assertEqual(
+            chunks[:10],
+            [
+                "<Analyze>",
+                "<think>",
+                "inspect the available data",
+                "</think>\n",
+                "</Analyze>",
+                "<Analyze>",
+                "plan",
+                "</Analyze><Code>",
+                "print('ok')",
+                "</Code>",
+            ],
+        )
+
+    def test_forwards_heywhale_like_plain_thinking_shape_incrementally(self):
+        model_deltas = iter(
+            [
+                (
+                    "Thinking before the action block.\n",
+                    {"choices": [{"finish_reason": None}]},
+                ),
+                ("</Analyze>\n", {"choices": [{"finish_reason": None}]}),
+                ("<Answer>", {"choices": [{"finish_reason": None}]}),
+                ("ok", {"choices": [{"finish_reason": None}]}),
+                ("</Answer>", {"choices": [{"finish_reason": "stop"}]}),
+            ]
+        )
+        with patch.object(chat, "_iter_local_stream", return_value=model_deltas):
+            chunks = list(
+                chat.bot_stream(
+                    [{"role": "user", "content": "analyze"}],
+                    [],
+                    "session-heywhale-like-streaming",
+                )
+            )
+
+        self.assertEqual(
+            chunks[:6],
+            [
+                "<Analyze>",
+                "Thinking before the action block.\n",
+                "</Analyze>",
+                "\n",
+                "<Answer>",
+                "ok",
+            ],
+        )
+        self.assertEqual(chunks[6], "</Answer>")
+
     def test_format_drift_is_silently_normalized(self):
         with patch.object(
             chat,
