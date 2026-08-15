@@ -85,13 +85,27 @@ class WorkspaceSecurityTest(unittest.IsolatedAsyncioTestCase):
     def test_sample_catalog_is_bilingual_and_rejects_unknown_ids(self):
         catalog = workspace.get_sample_catalog()["datasets"]
         self.assertEqual(len(catalog), 4)
+        expected_question_counts = {
+            "palmer_penguins": 3,
+            "life_expectancy": 3,
+            "bike_sharing": 4,
+            "college_majors": 6,
+        }
         for dataset in catalog:
             self.assertTrue(dataset["title"]["zh"])
             self.assertTrue(dataset["title"]["en"])
-            self.assertGreaterEqual(len(dataset["questions"]), 2)
+            self.assertEqual(
+                len(dataset["questions"]), expected_question_counts[dataset["id"]]
+            )
+            self.assertEqual(
+                len({question["id"] for question in dataset["questions"]}),
+                len(dataset["questions"]),
+            )
             for question in dataset["questions"]:
                 self.assertTrue(question["prompt"]["zh"])
                 self.assertTrue(question["prompt"]["en"])
+                self.assertNotIn("\n3.", question["prompt"]["zh"])
+                self.assertNotIn("\n3.", question["prompt"]["en"])
 
         with self.assertRaisesRegex(HTTPException, "Unknown sample dataset"):
             workspace.create_sample_data("session-sample", "not-a-sample")

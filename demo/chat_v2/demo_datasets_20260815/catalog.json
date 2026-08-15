@@ -8,19 +8,27 @@
       "files": ["single_file/palmer_penguins/penguins.csv"],
       "questions": [
         {
-          "id": "full",
-          "title": {"zh": "完整体征分析", "en": "Full trait analysis"},
+          "id": "species_traits",
+          "title": {"zh": "物种体征差异", "en": "Species trait differences"},
           "prompt": {
-            "zh": "请分析这份企鹅观测数据。先说明数据规模、字段含义和缺失值情况，再回答：\n\n1. 三个物种在体重、鳍长、喙长和喙深上有哪些明显差异？\n2. 在每个物种内部，雌雄企鹅的体重差异是否一致？请给出样本数、均值和中位数，避免只看总体平均数。\n3. 鳍长与体重的关系有多强？这种关系是否可能只是物种差异造成的？\n\n请生成一张“鳍长-体重”散点图（按物种着色、按性别区分形状）和一张按物种分组的体重箱线图，最后用 3 条通俗结论总结，并说明缺失值如何处理。将图表和清洗后的摘要表保存为文件。",
-            "en": "Analyze this penguin observation dataset. Start by describing its size, field meanings, and missing values, then answer:\n\n1. What clear differences do the three species show in body mass, flipper length, bill length, and bill depth?\n2. Within each species, is the body-mass difference between females and males consistent? Report sample size, mean, and median instead of relying only on an overall average.\n3. How strong is the relationship between flipper length and body mass? Could that relationship be explained mainly by differences between species?\n\nCreate a flipper-length versus body-mass scatter plot colored by species and shaped by sex, plus a species-grouped body-mass box plot. Finish with three plain-language findings, explain how missing values were handled, and save the charts and cleaned summary table as files."
+            "zh": "三种企鹅在体重、鳍长、喙长和喙深上有哪些明显差异？请用一张对比图和一张汇总表回答，并说明如何处理 NA。",
+            "en": "What clear differences do the three penguin species show in body mass, flipper length, bill length, and bill depth? Answer with one comparison chart and one summary table, and explain how NA values were handled."
           }
         },
         {
-          "id": "quick",
-          "title": {"zh": "快速区分物种", "en": "Quick species comparison"},
+          "id": "sex_body_mass",
+          "title": {"zh": "雌雄体重差异", "en": "Body mass by sex"},
           "prompt": {
-            "zh": "用一张图和不超过 5 句话告诉我：三种企鹅最容易通过哪些体征区分？结论必须带具体数值。",
-            "en": "Using one chart and no more than five sentences, explain which traits most clearly distinguish the three penguin species. Every conclusion must include specific numbers."
+            "zh": "在每个企鹅物种内部，雌雄体重差异是否一致？请报告样本数、均值和中位数，并用一张图展示。",
+            "en": "Within each penguin species, is the body-mass difference between females and males consistent? Report sample size, mean, and median, and show the comparison in one chart."
+          }
+        },
+        {
+          "id": "flipper_body_mass",
+          "title": {"zh": "鳍长与体重", "en": "Flipper length and body mass"},
+          "prompt": {
+            "zh": "鳍长与体重的关系有多强？请用按物种着色的散点图回答，并说明控制物种差异后关系是否仍然明显。",
+            "en": "How strong is the relationship between flipper length and body mass? Answer with a scatter plot colored by species and explain whether the relationship remains clear after accounting for species."
           }
         }
       ]
@@ -33,19 +41,27 @@
       "files": ["single_file/life_expectancy/life_expectancy.csv", "single_file/life_expectancy/source_metadata.json"],
       "questions": [
         {
-          "id": "full",
-          "title": {"zh": "六国长期趋势", "en": "Six-country long-run trends"},
+          "id": "long_term_gain",
+          "title": {"zh": "长期提升排名", "en": "Long-run improvement ranking"},
           "prompt": {
-            "zh": "请使用 1950-2023 年数据，比较中国、美国、印度、日本、巴西和南非的预期寿命变化：\n\n1. 列出每个国家 1950 年、2000 年和最新年份的数值，以及 1950 年至最新年份的增幅。\n2. 哪个国家提升最多？哪些国家曾出现显著的连续下降或单年下降？请指出具体年份和幅度。\n3. 单独比较 2019-2023 年，哪些国家在疫情后恢复到 2019 年水平，哪些没有？\n\n请先检查国家和年份覆盖是否完整，再绘制六国折线图，并生成一张关键年份对比表。结论应区分“数据中观察到的变化”和“可能原因”，不要仅凭这份数据断言因果。将图和表保存为文件。",
-            "en": "Using data from 1950 to 2023, compare changes in life expectancy for China, the United States, India, Japan, Brazil, and South Africa:\n\n1. List each country's values in 1950, 2000, and the latest year, together with the increase from 1950 to the latest year.\n2. Which country improved the most? Which countries experienced notable consecutive declines or single-year drops? Identify the exact years and magnitudes.\n3. Compare 2019-2023 separately. Which countries returned to their 2019 level after the pandemic, and which did not?\n\nFirst check whether country and year coverage is complete. Then create a six-country line chart and a key-year comparison table. Distinguish observed changes from possible explanations, do not infer causality from this dataset alone, and save the chart and table as files."
+            "zh": "1950-2023 年，中国、美国、印度、日本、巴西和南非中哪个国家的预期寿命提升最多？请用一张折线图和一张增幅排名表回答。",
+            "en": "From 1950 to 2023, which of China, the United States, India, Japan, Brazil, and South Africa improved the most in life expectancy? Answer with one line chart and one ranked table of gains."
           }
         },
         {
-          "id": "quick",
-          "title": {"zh": "快速进步排名", "en": "Quick improvement ranking"},
+          "id": "largest_declines",
+          "title": {"zh": "显著下降年份", "en": "Largest decline years"},
           "prompt": {
-            "zh": "从 1950 年起，六个指定国家中谁的预期寿命进步最大？用一张折线图和一张排序表回答。",
-            "en": "Since 1950, which of the six specified countries improved the most in life expectancy? Answer with one line chart and one ranked table."
+            "zh": "这六个国家中，哪些国家曾出现最显著的单年或连续预期寿命下降？请列出年份、幅度，并用图标出主要下降点。",
+            "en": "Which of the six countries experienced the largest single-year or consecutive declines in life expectancy? List the years and magnitudes, and mark the main drops in one chart."
+          }
+        },
+        {
+          "id": "pandemic_recovery",
+          "title": {"zh": "疫情后恢复", "en": "Post-pandemic recovery"},
+          "prompt": {
+            "zh": "比较六国 2019-2023 年的预期寿命：哪些国家已恢复到 2019 年水平，哪些没有？请用一张对比表和一张折线图回答。",
+            "en": "Compare life expectancy in the six countries from 2019 to 2023: which returned to their 2019 level and which did not? Answer with one comparison table and one line chart."
           }
         }
       ]
@@ -58,19 +74,35 @@
       "files": ["multi_file/bike_sharing/day.csv", "multi_file/bike_sharing/hour.csv", "multi_file/bike_sharing/Readme.txt"],
       "questions": [
         {
-          "id": "full",
-          "title": {"zh": "完整需求分析", "en": "Full demand analysis"},
+          "id": "file_consistency",
+          "title": {"zh": "日表与小时表核对", "en": "Daily-hourly reconciliation"},
           "prompt": {
-            "zh": "请联合分析日级和小时级共享单车数据：\n\n1. 先按日期汇总 hour.csv 的 casual、registered 和 cnt，与 day.csv 对应字段核对。报告不一致的日期数量和最大差异，不要默认两个文件一定一致。\n2. 比较 2011 与 2012 的总骑行量和同比增幅，并区分注册用户与临时用户。\n3. 工作日与非工作日的小时使用曲线有何不同？分别指出高峰小时。\n4. 天气状况与骑行量有什么关联？请同时报告各天气类别的样本数，避免用极少样本得出强结论。\n\n请生成日级趋势图、工作日/非工作日小时曲线图、星期×小时热力图，以及一张数据一致性检查表。最后给出 4 条面向运营人员的结论。将图表保存为文件。",
-            "en": "Analyze the daily and hourly bike-sharing data together:\n\n1. Aggregate casual, registered, and cnt from hour.csv by date and reconcile them with the corresponding fields in day.csv. Report the number of mismatched dates and the largest difference instead of assuming the files agree.\n2. Compare total rides in 2011 and 2012 and calculate year-over-year growth, separating registered from casual users.\n3. How do hourly usage curves differ between working and non-working days? Identify the peak hours for each.\n4. How is weather associated with ride volume? Also report sample counts for every weather category so that rare categories do not support overly strong conclusions.\n\nCreate a daily trend chart, working-day versus non-working-day hourly curves, a weekday-by-hour heatmap, and a data-consistency table. Finish with four findings for operations staff and save all charts and tables as files."
+            "zh": "hour.csv 按日期汇总后是否与 day.csv 的 casual、registered 和 cnt 完全一致？请报告不一致日期数量、最大差异，并保存核对表。",
+            "en": "After aggregating hour.csv by date, do casual, registered, and cnt exactly match day.csv? Report the number of mismatched dates and the largest difference, and save the reconciliation table."
           }
         },
         {
-          "id": "quick",
-          "title": {"zh": "快速高峰对比", "en": "Quick peak comparison"},
+          "id": "annual_growth",
+          "title": {"zh": "年度增长", "en": "Annual growth"},
           "prompt": {
-            "zh": "验证日表是否等于小时表按天汇总的结果，并用图说明工作日和周末的骑行高峰有什么不同。",
-            "en": "Verify whether the daily table equals the hourly table aggregated by date, then use a chart to show how ride peaks differ between working days and weekends."
+            "zh": "2012 年共享单车使用量相对 2011 年增长了多少？请区分注册用户和临时用户，并用一张对比图展示。",
+            "en": "How much did bike-sharing usage grow in 2012 compared with 2011? Separate registered and casual users and show the comparison in one chart."
+          }
+        },
+        {
+          "id": "hourly_peaks",
+          "title": {"zh": "工作日与周末高峰", "en": "Working-day and weekend peaks"},
+          "prompt": {
+            "zh": "工作日和周末的共享单车使用高峰分别在几点？请用小时曲线图展示差异，并标出各自高峰。",
+            "en": "At what hours does bike-sharing usage peak on working days and weekends? Show the difference with hourly curves and mark each peak."
+          }
+        },
+        {
+          "id": "weather_demand",
+          "title": {"zh": "天气与骑行量", "en": "Weather and ride demand"},
+          "prompt": {
+            "zh": "不同天气状况下的共享单车使用量有何差异？请同时报告每类天气的样本数和典型骑行量，避免用少量样本得出强结论。",
+            "en": "How does bike-sharing usage differ across weather conditions? Report the sample count and typical ride volume for each category so rare conditions do not support strong conclusions."
           }
         }
       ]
@@ -83,19 +115,51 @@
       "files": ["multi_file/college_majors/recent-grads.csv", "multi_file/college_majors/all-ages.csv", "multi_file/college_majors/grad-students.csv", "multi_file/college_majors/majors-list.csv"],
       "questions": [
         {
-          "id": "full",
-          "title": {"zh": "完整专业回报分析", "en": "Full major-outcomes analysis"},
+          "id": "join_quality",
+          "title": {"zh": "多表关联质量", "en": "Cross-file join quality"},
           "prompt": {
-            "zh": "请联合分析美国大学专业与就业收入数据：\n\n1. 核对各文件中的专业代码、专业名和类别能否正确对应，列出缺失或冲突记录。\n2. 对近期毕业生，按专业类别汇总收入中位数、失业率和低薪工作占比；每项给出表现最好和最差的类别，并报告专业数与样本规模。\n3. 比较相同专业在 recent-grads.csv 与 all-ages.csv 中的收入中位数。哪些专业的差距最大？说明这只是不同年龄口径的横截面对比，不能直接当成个人薪资增长。\n4. 结合 grad-students.csv，找出研究生收入溢价较高、同时研究生失业率没有明显恶化的专业或类别。\n5. 分析女性占比与近期毕业生收入中位数的相关关系；控制专业类别后，方向是否仍一致？不要把相关性表述为因果。\n\n请生成一张类别对比表、两张清晰图表，并给出 5 条面向选专业者的通俗结论。所有结论必须标明使用的是哪一种人群口径，并注明数据来自 2010-2012 年美国调查。将图表保存为文件。",
-            "en": "Analyze the U.S. college-major employment and earnings data across files:\n\n1. Verify that major codes, names, and categories align across the files, and list any missing or conflicting records.\n2. For recent graduates, summarize median earnings, unemployment rate, and low-wage-job share by major category. For each metric, identify the best and worst categories and report the number of majors and sample size.\n3. Compare median earnings for the same major in recent-grads.csv and all-ages.csv. Which majors have the largest gaps? Explain that this is a cross-sectional comparison of different age groups, not an individual's salary growth.\n4. Use grad-students.csv to identify majors or categories with a high graduate-degree earnings premium and no clear deterioration in graduate unemployment.\n5. Analyze the relationship between women's share and median earnings among recent graduates. Does the direction remain after accounting for major category? Do not present correlation as causation.\n\nCreate one category comparison table and two clear charts, then provide five plain-language findings for people choosing a major. Every finding must state which population definition it uses and note that the data comes from the 2010-2012 U.S. survey. Save the charts and tables as files."
+            "zh": "各文件中的专业代码、专业名和类别能否正确对应？请列出无法关联或存在冲突的记录，并保存核对表。",
+            "en": "Do major codes, names, and categories align correctly across the files? List any unmatched or conflicting records and save the reconciliation table."
           }
         },
         {
-          "id": "quick",
-          "title": {"zh": "快速筛选专业", "en": "Quick major shortlist"},
+          "id": "category_outcomes",
+          "title": {"zh": "专业类别就业表现", "en": "Outcomes by major category"},
           "prompt": {
-            "zh": "近期毕业生中，哪些专业呈现“收入较高且失业率较低”？给出一个透明的筛选标准、前 10 名表格和一张散点图。",
-            "en": "Among recent graduates, which majors combine relatively high earnings with low unemployment? Define a transparent screening rule and provide a top-10 table and one scatter plot."
+            "zh": "近期毕业生中，哪些专业类别的收入较高且失业率较低？请报告各类别的专业数和样本规模，并用一张图比较。",
+            "en": "Among recent graduates, which major categories combine higher earnings with lower unemployment? Report the number of majors and sample size per category and compare them in one chart."
+          }
+        },
+        {
+          "id": "age_group_earnings",
+          "title": {"zh": "不同年龄口径收入差异", "en": "Earnings across age groups"},
+          "prompt": {
+            "zh": "同一专业在 recent-grads.csv 与 all-ages.csv 中的收入中位数差距有多大？请列出差距最大的 10 个专业，并说明这不是个人薪资增长。",
+            "en": "How large is the median-earnings gap for the same major between recent-grads.csv and all-ages.csv? List the ten largest gaps and explain that this is not an individual's salary growth."
+          }
+        },
+        {
+          "id": "graduate_premium",
+          "title": {"zh": "研究生收入溢价", "en": "Graduate earnings premium"},
+          "prompt": {
+            "zh": "哪些专业的研究生收入溢价较高，同时研究生失业率没有明显恶化？请给出一个透明筛选标准和前 10 名表格。",
+            "en": "Which majors have a high graduate earnings premium without clearly worse graduate unemployment? Define a transparent screening rule and provide a top-ten table."
+          }
+        },
+        {
+          "id": "women_earnings",
+          "title": {"zh": "女性占比与收入", "en": "Women's share and earnings"},
+          "prompt": {
+            "zh": "近期毕业生中，女性占比与收入中位数有什么关系？请用散点图展示，并说明按专业类别比较后关系是否仍然明显，不要把相关性表述为因果。",
+            "en": "Among recent graduates, how is women's share related to median earnings? Show the relationship in a scatter plot and explain whether it remains clear within major categories, without presenting correlation as causation."
+          }
+        },
+        {
+          "id": "major_shortlist",
+          "title": {"zh": "高收入低失业专业", "en": "High-earning, low-unemployment majors"},
+          "prompt": {
+            "zh": "近期毕业生中，哪些专业呈现“收入较高且失业率较低”？请给出透明筛选标准、前 10 名表格和一张散点图。",
+            "en": "Among recent graduates, which majors combine relatively high earnings with low unemployment? Define a transparent screening rule and provide a top-ten table and one scatter plot."
           }
         }
       ]

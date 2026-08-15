@@ -2,30 +2,26 @@
 
 上传并选择 `day.csv`、`hour.csv` 和 `Readme.txt`。 / Upload and select `day.csv`, `hour.csv`, and `Readme.txt`.
 
-## 完整需求分析
+## 1. 日表与小时表核对 / Daily-hourly reconciliation
 
-请联合分析日级和小时级共享单车数据：
+中文：`hour.csv` 按日期汇总后是否与 `day.csv` 的 `casual`、`registered` 和 `cnt` 完全一致？请报告不一致日期数量、最大差异，并保存核对表。
 
-1. 先按日期汇总 `hour.csv` 的 `casual`、`registered` 和 `cnt`，与 `day.csv` 对应字段核对。报告不一致的日期数量和最大差异，不要默认两个文件一定一致。
-2. 比较 2011 与 2012 的总骑行量和同比增幅，并区分注册用户与临时用户。
-3. 工作日与非工作日的小时使用曲线有何不同？分别指出高峰小时。
-4. 天气状况与骑行量有什么关联？请同时报告各天气类别的样本数，避免用极少样本得出强结论。
+English: After aggregating `hour.csv` by date, do `casual`, `registered`, and `cnt` exactly match `day.csv`? Report the number of mismatched dates and the largest difference, and save the reconciliation table.
 
-请生成日级趋势图、工作日/非工作日小时曲线图、星期×小时热力图，以及一张数据一致性检查表。最后给出 4 条面向运营人员的结论。将图表保存为文件。
+## 2. 年度增长 / Annual growth
 
-## Full demand analysis
+中文：2012 年共享单车使用量相对 2011 年增长了多少？请区分注册用户和临时用户，并用一张对比图展示。
 
-Analyze the daily and hourly bike-sharing data together:
+English: How much did bike-sharing usage grow in 2012 compared with 2011? Separate registered and casual users and show the comparison in one chart.
 
-1. Aggregate `casual`, `registered`, and `cnt` from `hour.csv` by date and reconcile them with the corresponding fields in `day.csv`. Report the number of mismatched dates and the largest difference instead of assuming the files agree.
-2. Compare total rides in 2011 and 2012 and calculate year-over-year growth, separating registered from casual users.
-3. How do hourly usage curves differ between working and non-working days? Identify the peak hours for each.
-4. How is weather associated with ride volume? Also report sample counts for every weather category so that rare categories do not support overly strong conclusions.
+## 3. 工作日与周末高峰 / Working-day and weekend peaks
 
-Create a daily trend chart, working-day versus non-working-day hourly curves, a weekday-by-hour heatmap, and a data-consistency table. Finish with four findings for operations staff and save all charts and tables as files.
+中文：工作日和周末的共享单车使用高峰分别在几点？请用小时曲线图展示差异，并标出各自高峰。
 
-## 快速高峰对比 / Quick peak comparison
+English: At what hours does bike-sharing usage peak on working days and weekends? Show the difference with hourly curves and mark each peak.
 
-中文：验证日表是否等于小时表按天汇总的结果，并用图说明工作日和周末的骑行高峰有什么不同。
+## 4. 天气与骑行量 / Weather and ride demand
 
-English: Verify whether the daily table equals the hourly table aggregated by date, then use a chart to show how ride peaks differ between working days and weekends.
+中文：不同天气状况下的共享单车使用量有何差异？请同时报告每类天气的样本数和典型骑行量，避免用少量样本得出强结论。
+
+English: How does bike-sharing usage differ across weather conditions? Report the sample count and typical ride volume for each category so rare conditions do not support strong conclusions.

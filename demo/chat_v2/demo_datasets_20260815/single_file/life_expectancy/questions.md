@@ -1,29 +1,21 @@
 # 全球预期寿命演示问题 / Global Life Expectancy Demo Questions
 
-上传并选择 `life_expectancy.csv`；`source_metadata.json` 可用于核对定义和来源。 / Upload and select `life_expectancy.csv`; use `source_metadata.json` to verify definitions and sources.
+上传并选择 `life_expectancy.csv` 和 `source_metadata.json`。 / Upload and select `life_expectancy.csv` and `source_metadata.json`.
 
-## 六国长期趋势
+## 1. 长期提升排名 / Long-run improvement ranking
 
-请使用 1950-2023 年数据，比较中国、美国、印度、日本、巴西和南非的预期寿命变化：
+中文：1950-2023 年，中国、美国、印度、日本、巴西和南非中哪个国家的预期寿命提升最多？请用一张折线图和一张增幅排名表回答。
 
-1. 列出每个国家 1950 年、2000 年和最新年份的数值，以及 1950 年至最新年份的增幅。
-2. 哪个国家提升最多？哪些国家曾出现显著的连续下降或单年下降？请指出具体年份和幅度。
-3. 单独比较 2019-2023 年，哪些国家在疫情后恢复到 2019 年水平，哪些没有？
+English: From 1950 to 2023, which of China, the United States, India, Japan, Brazil, and South Africa improved the most in life expectancy? Answer with one line chart and one ranked table of gains.
 
-请先检查国家和年份覆盖是否完整，再绘制六国折线图，并生成一张关键年份对比表。结论应区分“数据中观察到的变化”和“可能原因”，不要仅凭这份数据断言因果。将图和表保存为文件。
+## 2. 显著下降年份 / Largest decline years
 
-## Six-country long-run trends
+中文：这六个国家中，哪些国家曾出现最显著的单年或连续预期寿命下降？请列出年份、幅度，并用图标出主要下降点。
 
-Using data from 1950 to 2023, compare changes in life expectancy for China, the United States, India, Japan, Brazil, and South Africa:
+English: Which of the six countries experienced the largest single-year or consecutive declines in life expectancy? List the years and magnitudes, and mark the main drops in one chart.
 
-1. List each country's values in 1950, 2000, and the latest year, together with the increase from 1950 to the latest year.
-2. Which country improved the most? Which countries experienced notable consecutive declines or single-year drops? Identify the exact years and magnitudes.
-3. Compare 2019-2023 separately. Which countries returned to their 2019 level after the pandemic, and which did not?
+## 3. 疫情后恢复 / Post-pandemic recovery
 
-First check whether country and year coverage is complete. Then create a six-country line chart and a key-year comparison table. Distinguish observed changes from possible explanations, do not infer causality from this dataset alone, and save the chart and table as files.
+中文：比较六国 2019-2023 年的预期寿命：哪些国家已恢复到 2019 年水平，哪些没有？请用一张对比表和一张折线图回答。
 
-## 快速进步排名 / Quick improvement ranking
-
-中文：从 1950 年起，六个指定国家中谁的预期寿命进步最大？用一张折线图和一张排序表回答。
-
-English: Since 1950, which of the six specified countries improved the most in life expectancy? Answer with one line chart and one ranked table.
+English: Compare life expectancy in the six countries from 2019 to 2023: which returned to their 2019 level and which did not? Answer with one comparison table and one line chart.
