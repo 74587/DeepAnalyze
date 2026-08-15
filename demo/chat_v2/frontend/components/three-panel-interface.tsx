@@ -63,8 +63,15 @@ import {
   normalizeWorkspacePath,
 } from "@/lib/workspace-files";
 import {
+  findSampleSelection,
+  mergeSampleFilePaths,
+  normalizeSampleCatalog,
+} from "@/lib/sample-catalog";
+import {
   Dialog,
   DialogContent,
+  DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
@@ -169,6 +176,26 @@ interface WorkspaceFile {
   is_generated?: boolean;
   download_url: string;
   preview_url?: string;
+}
+
+interface LocalizedText {
+  zh: string;
+  en: string;
+}
+
+interface SampleQuestion {
+  id: string;
+  title: LocalizedText;
+  prompt: LocalizedText;
+}
+
+interface SampleDataset {
+  id: string;
+  kind: "single_file" | "multi_file";
+  title: LocalizedText;
+  description: LocalizedText;
+  files: string[];
+  questions: SampleQuestion[];
 }
 
 interface PreviewTableData {
@@ -1192,9 +1219,25 @@ export function ThreePanelInterface() {
   const [dropActive, setDropActive] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [isLoadingSample, setIsLoadingSample] = useState(false);
+  const [isSampleDialogOpen, setIsSampleDialogOpen] = useState(false);
+  const [isSampleCatalogLoading, setIsSampleCatalogLoading] = useState(false);
+  const [sampleCatalog, setSampleCatalog] = useState<SampleDataset[]>([]);
+  const [selectedSampleId, setSelectedSampleId] = useState("");
+  const [selectedSampleQuestionId, setSelectedSampleQuestionId] = useState("");
   const [uploadMsg, setUploadMsg] = useState<string>("");
   const [exportingFormat, setExportingFormat] = useState<"md" | "pdf" | null>(
     null
+  );
+  const selectedSample = useMemo(
+    () => sampleCatalog.find((dataset) => dataset.id === selectedSampleId) || null,
+    [sampleCatalog, selectedSampleId]
+  );
+  const selectedSampleQuestion = useMemo(
+    () =>
+      selectedSample?.questions.find(
+        (question) => question.id === selectedSampleQuestionId
+      ) || null,
+    [selectedSample, selectedSampleQuestionId]
   );
 
   const scrollRafRef = useRef<number | null>(null);
@@ -2984,30 +3027,68 @@ export function ThreePanelInterface() {
     });
   };
 
+  const openSampleDialog = async () => {
+    setIsSampleDialogOpen(true);
+    if (sampleCatalog.length || isSampleCatalogLoading) return;
+
+    setIsSampleCatalogLoading(true);
+    try {
+      const response = await fetch(API_URLS.WORKSPACE_SAMPLES);
+      if (!response.ok) throw new Error(await response.text());
+      const payload = await response.json();
+      const datasets = normalizeSampleCatalog(payload) as SampleDataset[];
+      if (!datasets.length) throw new Error("sample catalog is empty");
+      setSampleCatalog(datasets);
+      setSelectedSampleId(datasets[0].id);
+      setSelectedSampleQuestionId(datasets[0].questions[0].id);
+    } catch (error) {
+      console.error("load sample catalog failed", error);
+      toast({
+        description:
+          uiLanguage === "zh" ? "示例数据目录加载失败" : "Failed to load sample catalog",
+        variant: "destructive",
+      });
+    } finally {
+      setIsSampleCatalogLoading(false);
+    }
+  };
+
   const loadSampleData = async () => {
     if (!sessionId || isLoadingSample) return;
+    const selection = findSampleSelection(
+      sampleCatalog,
+      selectedSampleId,
+      selectedSampleQuestionId
+    ) as { dataset: SampleDataset; question: SampleQuestion } | null;
+    if (!selection) return;
+
     setIsLoadingSample(true);
     try {
       const response = await fetch(
-        `${API_URLS.WORKSPACE_SAMPLE}?session_id=${encodeURIComponent(sessionId)}`,
+        buildApiUrlWithParams(API_CONFIG.ENDPOINTS.WORKSPACE_SAMPLE, {
+          session_id: sessionId,
+          sample_id: selection.dataset.id,
+        }),
         { method: "POST" }
       );
       if (!response.ok) {
         throw new Error(await response.text());
       }
       const data = await response.json();
-      const file = data.file as WorkspaceFile;
-      setSelectedAnalysisFiles((current) => new Set(current).add(file.path));
+      const files = Array.isArray(data.files) ? (data.files as WorkspaceFile[]) : [];
+      if (!files.length) throw new Error("sample response has no files");
+      setSelectedAnalysisFiles((current) => mergeSampleFilePaths(current, files));
       fileSelectionInitializedRef.current = true;
-      setInputValue(data.recommended_prompt?.[uiLanguage] || "");
-      setSelectedWorkspacePath(file.path);
+      setInputValue(selection.question.prompt[uiLanguage]);
+      setSelectedWorkspacePath(files[0].path);
       await Promise.all([loadWorkspaceFiles(), loadWorkspaceTree()]);
-      await openPreview(file);
+      await openPreview(files[0]);
+      setIsSampleDialogOpen(false);
       toast({
         description:
           uiLanguage === "zh"
-            ? "示例数据已加载，分析要求也已填入"
-            : "Sample data loaded and the analysis request is ready",
+            ? `已加载“${selection.dataset.title.zh}”并填入问题`
+            : `Loaded “${selection.dataset.title.en}” and filled in the question`,
       });
     } catch (error) {
       console.error("load sample data failed", error);
@@ -5939,8 +6020,8 @@ export function ThreePanelInterface() {
                           variant="outline"
                           size="sm"
                           className="h-8 rounded-lg"
-                          disabled={isLoadingSample}
-                          onClick={() => void loadSampleData()}
+                          disabled={isLoadingSample || isSampleCatalogLoading}
+                          onClick={() => void openSampleDialog()}
                         >
                         {isLoadingSample ? (
                           <RefreshCw className="h-3.5 w-3.5 animate-spin" />
@@ -7298,6 +7379,141 @@ export function ThreePanelInterface() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <Dialog open={isSampleDialogOpen} onOpenChange={setIsSampleDialogOpen}>
+        <DialogContent className="flex max-h-[min(760px,calc(100vh-2rem))] flex-col overflow-hidden p-0 sm:max-w-3xl">
+          <DialogHeader className="shrink-0 border-b border-gray-200 px-5 py-4 dark:border-gray-800">
+            <DialogTitle>
+              {uiLanguage === "zh" ? "加载示例数据" : "Load sample data"}
+            </DialogTitle>
+            <DialogDescription>
+              {uiLanguage === "zh"
+                ? "选择一个公开数据源和一个分析问题。"
+                : "Choose a public dataset and an analysis question."}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+            {isSampleCatalogLoading ? (
+              <div className="flex h-48 items-center justify-center text-sm text-gray-500">
+                <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+                {uiLanguage === "zh" ? "正在加载数据目录" : "Loading data catalog"}
+              </div>
+            ) : sampleCatalog.length ? (
+              <div className="grid gap-5 md:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)]">
+                <section>
+                  <h3 className="mb-2 text-xs font-semibold text-gray-600 dark:text-gray-300">
+                    {uiLanguage === "zh" ? "数据源" : "Dataset"}
+                  </h3>
+                  <div className="space-y-2" role="radiogroup">
+                    {sampleCatalog.map((dataset) => {
+                      const active = dataset.id === selectedSampleId;
+                      return (
+                        <button
+                          key={dataset.id}
+                          type="button"
+                          role="radio"
+                          aria-checked={active}
+                          onClick={() => {
+                            setSelectedSampleId(dataset.id);
+                            setSelectedSampleQuestionId(dataset.questions[0].id);
+                          }}
+                          className={`w-full rounded-md border px-3 py-2.5 text-left transition-colors ${
+                            active
+                              ? "border-blue-500 bg-blue-50 dark:border-blue-500 dark:bg-blue-950/30"
+                              : "border-gray-200 hover:border-gray-300 hover:bg-gray-50 dark:border-gray-800 dark:hover:border-gray-700 dark:hover:bg-gray-900"
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-sm font-semibold text-gray-900 dark:text-white">
+                              {dataset.title[uiLanguage]}
+                            </span>
+                            <span className="shrink-0 text-[11px] text-gray-400">
+                              {dataset.files.length} {uiLanguage === "zh" ? "个文件" : dataset.files.length === 1 ? "file" : "files"}
+                            </span>
+                          </div>
+                          <p className="mt-1 text-xs leading-5 text-gray-500 dark:text-gray-400">
+                            {dataset.description[uiLanguage]}
+                          </p>
+                          <p className="mt-1 truncate text-[11px] text-gray-400" title={dataset.files.join(", ")}>
+                            {dataset.files.join(", ")}
+                          </p>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </section>
+
+                <section>
+                  <h3 className="mb-2 text-xs font-semibold text-gray-600 dark:text-gray-300">
+                    {uiLanguage === "zh" ? "分析问题" : "Analysis question"}
+                  </h3>
+                  <div className="space-y-2" role="radiogroup">
+                    {selectedSample?.questions.map((question) => {
+                      const active = question.id === selectedSampleQuestionId;
+                      return (
+                        <button
+                          key={question.id}
+                          type="button"
+                          role="radio"
+                          aria-checked={active}
+                          onClick={() => setSelectedSampleQuestionId(question.id)}
+                          className={`w-full rounded-md border px-3 py-2.5 text-left transition-colors ${
+                            active
+                              ? "border-emerald-500 bg-emerald-50 dark:border-emerald-500 dark:bg-emerald-950/20"
+                              : "border-gray-200 hover:border-gray-300 hover:bg-gray-50 dark:border-gray-800 dark:hover:border-gray-700 dark:hover:bg-gray-900"
+                          }`}
+                        >
+                          <span className="text-sm font-semibold text-gray-900 dark:text-white">
+                            {question.title[uiLanguage]}
+                          </span>
+                          <p className="mt-1 max-h-20 overflow-hidden whitespace-pre-line text-xs leading-5 text-gray-500 dark:text-gray-400">
+                            {question.prompt[uiLanguage]}
+                          </p>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {selectedSampleQuestion && (
+                    <div className="mt-3 border-t border-gray-200 pt-3 dark:border-gray-800">
+                      <div className="max-h-32 overflow-y-auto whitespace-pre-line text-xs leading-5 text-gray-600 dark:text-gray-300">
+                        {selectedSampleQuestion.prompt[uiLanguage]}
+                      </div>
+                    </div>
+                  )}
+                </section>
+              </div>
+            ) : (
+              <div className="flex h-48 items-center justify-center text-sm text-gray-500">
+                {uiLanguage === "zh" ? "暂无可用示例数据" : "No sample datasets available"}
+              </div>
+            )}
+          </div>
+
+          <DialogFooter className="shrink-0 border-t border-gray-200 px-5 py-3 dark:border-gray-800">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setIsSampleDialogOpen(false)}
+              disabled={isLoadingSample}
+            >
+              {uiLanguage === "zh" ? "取消" : "Cancel"}
+            </Button>
+            <Button
+              type="button"
+              onClick={() => void loadSampleData()}
+              disabled={!selectedSampleQuestion || isLoadingSample}
+            >
+              {isLoadingSample ? (
+                <RefreshCw className="h-4 w-4 animate-spin" />
+              ) : (
+                <Database className="h-4 w-4" />
+              )}
+              {uiLanguage === "zh" ? "加载并填入问题" : "Load and fill question"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
 
       {/* 文件预览弹窗 */}

@@ -63,24 +63,55 @@ class WorkspaceSecurityTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(HTTPException, "Workspace size"):
             await workspace.upload_files_to_workspace("session-1", [second])
 
-    def test_creates_reusable_sample_data_without_overwriting_user_file(self):
+    def test_loads_reusable_catalog_sample_without_overwriting_user_file(self):
         roomy_settings = replace(
             self.settings,
-            workspace_max_bytes=100_000,
+            upload_max_file_bytes=2_000_000,
+            workspace_max_bytes=10_000_000,
             workspace_max_files=10,
         )
         with patch.object(workspace, "settings", roomy_settings):
-            first = workspace.create_sample_data("session-sample")
-            second = workspace.create_sample_data("session-sample")
+            root = workspace.resolve_workspace_root("session-sample")
+            (root / "penguins.csv").write_text("user data", encoding="utf-8")
+            first = workspace.create_sample_data("session-sample", "palmer_penguins")
+            second = workspace.create_sample_data("session-sample", "palmer_penguins")
 
-            self.assertEqual(first["file"]["path"], "retail_sales_demo.csv")
-            self.assertEqual(second["file"]["path"], "retail_sales_demo.csv")
-            self.assertIn("recommended_prompt", first)
-            content = (
-                workspace.resolve_workspace_root("session-sample")
-                / "retail_sales_demo.csv"
-            ).read_text(encoding="utf-8")
-            self.assertIn("2025-04,East,Partner", content)
+            self.assertEqual(first["files"][0]["path"], "penguins (1).csv")
+            self.assertEqual(second["files"][0]["path"], "penguins (1).csv")
+            self.assertEqual((root / "penguins.csv").read_text(encoding="utf-8"), "user data")
+            content = (root / "penguins (1).csv").read_text(encoding="utf-8")
+            self.assertIn("Adelie,Torgersen", content)
+
+    def test_sample_catalog_is_bilingual_and_rejects_unknown_ids(self):
+        catalog = workspace.get_sample_catalog()["datasets"]
+        self.assertEqual(len(catalog), 4)
+        for dataset in catalog:
+            self.assertTrue(dataset["title"]["zh"])
+            self.assertTrue(dataset["title"]["en"])
+            self.assertGreaterEqual(len(dataset["questions"]), 2)
+            for question in dataset["questions"]:
+                self.assertTrue(question["prompt"]["zh"])
+                self.assertTrue(question["prompt"]["en"])
+
+        with self.assertRaisesRegex(HTTPException, "Unknown sample dataset"):
+            workspace.create_sample_data("session-sample", "not-a-sample")
+
+    def test_loads_every_catalog_dataset(self):
+        roomy_settings = replace(
+            self.settings,
+            upload_max_file_bytes=2_000_000,
+            workspace_max_bytes=20_000_000,
+            workspace_max_files=20,
+        )
+        catalog = workspace.get_sample_catalog()["datasets"]
+        with patch.object(workspace, "settings", roomy_settings):
+            for dataset in catalog:
+                with self.subTest(dataset=dataset["id"]):
+                    result = workspace.create_sample_data(
+                        f"session-{dataset['id']}", dataset["id"]
+                    )
+                    self.assertEqual(len(result["files"]), len(dataset["files"]))
+                    self.assertTrue(all(file["size"] > 0 for file in result["files"]))
 
     def test_list_workspace_files_uses_explicit_generated_metadata(self):
         root = workspace.resolve_workspace_root("session-classification")

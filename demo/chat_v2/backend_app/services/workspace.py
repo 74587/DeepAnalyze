@@ -18,6 +18,11 @@ from fastapi.responses import FileResponse, Response
 from starlette.background import BackgroundTask
 
 from ..settings import PREVIEWABLE_EXTENSIONS, settings
+from .sample_catalog import (
+    get_sample_dataset,
+    list_sample_datasets,
+    resolve_sample_files,
+)
 
 
 GENERATED_INDEX_FILENAME = ".deepanalyze_generated.json"
@@ -879,45 +884,68 @@ async def upload_files_to_workspace(session_id: str, files: Iterable[UploadFile]
     }
 
 
-SAMPLE_DATA_FILENAME = "retail_sales_demo.csv"
-SAMPLE_DATA_CONTENT = """month,region,channel,revenue,cost,orders,satisfaction
-2025-01,North,Online,128000,76000,820,4.3
-2025-01,South,Retail,93000,61000,590,4.1
-2025-01,East,Partner,81000,59000,470,3.9
-2025-02,North,Online,136000,79000,870,4.4
-2025-02,South,Retail,97000,63000,605,4.0
-2025-02,East,Partner,78000,60000,455,3.7
-2025-03,North,Online,149000,83000,925,4.5
-2025-03,South,Retail,102000,66000,640,4.1
-2025-03,East,Partner,74000,61000,430,3.5
-2025-04,North,Online,158000,86000,970,4.6
-2025-04,South,Retail,108000,69000,675,4.2
-2025-04,East,Partner,69000,62000,395,3.2
-"""
+def get_sample_catalog() -> dict:
+    return {"datasets": list_sample_datasets()}
 
 
-def create_sample_data(session_id: str) -> dict:
-    """在当前会话工作区创建可重复使用的轻量演示数据。"""
+def create_sample_data(session_id: str, sample_id: str) -> dict:
+    """Copy a cataloged public dataset into the current session workspace."""
+    dataset = get_sample_dataset(sample_id)
+    sources = resolve_sample_files(dataset)
     workspace_root = resolve_workspace_root(session_id)
-    target = workspace_root / SAMPLE_DATA_FILENAME
-    encoded = SAMPLE_DATA_CONTENT.encode("utf-8")
+    existing_files = [
+        path
+        for path in workspace_root.rglob("*")
+        if path.is_file() and not is_internal_workspace_path(path, workspace_root)
+    ]
+    file_count = len(existing_files)
+    workspace_bytes = sum(path.stat().st_size for path in existing_files)
+    loaded_paths: list[str] = []
 
-    if target.exists() and target.read_bytes() != encoded:
+    for source in sources:
+        source_size = source.stat().st_size
+        if source_size > settings.upload_max_file_bytes:
+            raise HTTPException(status_code=413, detail="Sample file size limit exceeded")
+
+        target = workspace_root / source.name
+        numbered_name = re.compile(
+            rf"^{re.escape(source.stem)} \(\d+\){re.escape(source.suffix)}$"
+        )
+        reusable_targets = [
+            path
+            for path in workspace_root.iterdir()
+            if path.is_file()
+            and (path.name == source.name or numbered_name.fullmatch(path.name))
+        ]
+        reused = next(
+            (
+                path
+                for path in reusable_targets
+                if path.stat().st_size == source_size
+                and path.read_bytes() == source.read_bytes()
+            ),
+            None,
+        )
+        if reused is not None:
+            loaded_paths.append(reused.relative_to(workspace_root).as_posix())
+            continue
         target = uniquify_path(target)
-    if not target.exists():
-        target.write_bytes(encoded)
 
-    relative_path = target.relative_to(workspace_root).as_posix()
-    file_info = next(
-        item for item in list_workspace_files(session_id) if item["path"] == relative_path
-    )
+        if file_count >= settings.workspace_max_files:
+            raise HTTPException(status_code=413, detail="Workspace file count limit exceeded")
+        if workspace_bytes + source_size > settings.workspace_max_bytes:
+            raise HTTPException(status_code=413, detail="Workspace size limit exceeded")
+
+        shutil.copy2(source, target)
+        file_count += 1
+        workspace_bytes += source_size
+        loaded_paths.append(target.relative_to(workspace_root).as_posix())
+
+    files_by_path = {item["path"]: item for item in list_workspace_files(session_id)}
     return {
         "message": "Sample data is ready",
-        "file": file_info,
-        "recommended_prompt": {
-            "zh": "分析示例销售数据的收入、利润率和订单趋势，找出表现最好与风险最高的区域及渠道，并生成一张趋势图和简短结论。",
-            "en": "Analyze revenue, margin, and order trends in the sample sales data. Identify the strongest and highest-risk regions and channels, then create a trend chart and a concise conclusion.",
-        },
+        "sample_id": dataset["id"],
+        "files": [files_by_path[path] for path in loaded_paths],
     }
 
 
