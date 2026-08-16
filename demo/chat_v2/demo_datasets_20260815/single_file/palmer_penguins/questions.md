@@ -4,9 +4,9 @@
 
 ## 1. 物种体征差异 / Species trait differences
 
-中文：三种企鹅在体重、鳍长、喙长和喙深上有哪些明显差异？请用一张对比图和一张汇总表回答，并说明如何处理 NA。
+中文：分析这些数据，找出三种企鹅之间的差异。
 
-English: What clear differences do the three penguin species show in body mass, flipper length, bill length, and bill depth? Answer with one comparison chart and one summary table, and explain how NA values were handled.
+English: Analyze this data and find the differences among the three penguin species.
 
 ## 2. 雌雄体重差异 / Body mass by sex
 
