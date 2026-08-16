@@ -129,6 +129,15 @@ def release_session_run(session_id: str, lock: threading.Lock) -> None:
     lock.release()
 
 
+def wait_for_session_run_release(session_id: str, timeout_sec: float) -> bool:
+    lock = _get_or_create_session_run_lock(session_id)
+    acquired = lock.acquire(timeout=max(0.0, timeout_sec))
+    if not acquired:
+        return False
+    lock.release()
+    return True
+
+
 def _execution_status_block(kind: str, message: str) -> str:
     logger.warning("analysis_status kind=%s message=%s", kind, message)
     return f"\n<Execute>\n[{kind}]: {message}\n</Execute>\n"

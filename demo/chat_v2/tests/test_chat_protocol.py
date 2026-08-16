@@ -1,4 +1,7 @@
+import asyncio
 import tempfile
+import threading
+import time
 import unittest
 from dataclasses import replace
 from pathlib import Path
@@ -6,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from backend_app.services import chat, workspace
+from backend_app.routers import chat as chat_router
 
 
 def stream_text(text):
@@ -448,6 +452,49 @@ class ChatProtocolIntegrationTest(unittest.TestCase):
         finally:
             chat.release_session_run("session-busy", lock)
         self.assertIn("[Session Busy]", output)
+
+    def test_stop_endpoint_waits_until_session_accepts_a_new_run(self):
+        session_id = "session-stop-release"
+        stream_started = threading.Event()
+
+        def slow_stream(*_args):
+            stream_started.set()
+            while True:
+                yield "working", {"choices": [{"finish_reason": None}]}
+                time.sleep(0.01)
+
+        with patch.object(chat, "_iter_local_stream", side_effect=slow_stream):
+            worker = threading.Thread(
+                target=lambda: list(
+                    chat.bot_stream(
+                        [{"role": "user", "content": "analyze"}],
+                        [],
+                        session_id,
+                    )
+                ),
+                daemon=True,
+            )
+            worker.start()
+            self.assertTrue(stream_started.wait(timeout=1))
+            result = asyncio.run(chat_router.stop_chat({"session_id": session_id}))
+            worker.join(timeout=1)
+
+        self.assertFalse(worker.is_alive())
+        self.assertTrue(result["stopped"])
+        with patch.object(
+            chat,
+            "_iter_local_stream",
+            return_value=stream_text("<Answer>done</Answer>"),
+        ):
+            output = "".join(
+                chat.bot_stream(
+                    [{"role": "user", "content": "analyze again"}],
+                    [],
+                    session_id,
+                )
+            )
+        self.assertNotIn("[Session Busy]", output)
+        self.assertIn("<Answer>done</Answer>", output)
 
     def test_explicit_empty_file_selection_does_not_include_all_files(self):
         workspace_dir = workspace.get_session_workspace("session-selection")

@@ -5229,26 +5229,36 @@ export function ThreePanelInterface() {
     const controller = streamAbortControllerRef.current;
     if (!controller && !isTypingRef.current) return;
     setIsStopping(true);
-    controller?.abort();
-    streamAbortControllerRef.current = null;
-    setIsTyping(false);
-    setStreamingMessageId(null);
     try {
       if (sessionId) {
-        await fetch(API_URLS.CHAT_STOP, {
+        const response = await fetch(API_URLS.CHAT_STOP, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
           },
           body: JSON.stringify({ session_id: sessionId }),
         });
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
       }
+      controller?.abort();
+      streamAbortControllerRef.current = null;
+      setIsTyping(false);
+      setStreamingMessageId(null);
     } catch (error) {
       console.warn("stop stream failed", error);
+      toastRef.current({
+        description:
+          uiLanguage === "zh"
+            ? "停止任务失败，请稍后重试"
+            : "Failed to stop the task. Please try again.",
+        variant: "destructive",
+      });
     } finally {
       setIsStopping(false);
     }
-  }, [sessionId]);
+  }, [sessionId, uiLanguage]);
 
   const handleSendMessage = async () => {
     if (isTypingRef.current) {

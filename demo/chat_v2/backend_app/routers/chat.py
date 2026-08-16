@@ -14,6 +14,7 @@ from ..services.chat import (
     release_session_run,
     request_stop,
     try_acquire_session_run,
+    wait_for_session_run_release,
 )
 from ..services.execution_service import execute_managed_code
 from ..services.session_state import (
@@ -183,6 +184,20 @@ async def chat(body: dict = Body(...)):
 
 @router.post("/chat/stop")
 async def stop_chat(body: dict = Body(default={})):
-    session_id = body.get("session_id", "default")
+    session_id = validate_session_id(body.get("session_id", "default"))
     request_stop(session_id)
-    return {"message": "stop requested", "session_id": session_id}
+    released = await run_in_threadpool(
+        wait_for_session_run_release,
+        session_id,
+        settings.model_stream_read_timeout_sec + 5,
+    )
+    if not released:
+        raise HTTPException(
+            status_code=504,
+            detail="Timed out waiting for the active analysis to stop",
+        )
+    return {
+        "message": "analysis stopped",
+        "session_id": session_id,
+        "stopped": True,
+    }
