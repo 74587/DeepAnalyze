@@ -39,8 +39,11 @@ class ChatProtocolIntegrationTest(unittest.TestCase):
         self.workspace_settings_patch = patch.object(workspace, "settings", safe_settings)
         self.chat_settings_patch.start()
         self.workspace_settings_patch.start()
+        self.prewarm_patch = patch.object(chat, "ensure_execution_backend_ready")
+        self.prewarm_patch.start()
         self.addCleanup(self.chat_settings_patch.stop)
         self.addCleanup(self.workspace_settings_patch.stop)
+        self.addCleanup(self.prewarm_patch.stop)
 
     def test_truncated_code_is_never_executed(self):
         execute_mock = Mock(return_value=execution_outcome("must not run"))
@@ -55,6 +58,25 @@ class ChatProtocolIntegrationTest(unittest.TestCase):
             ))
         self.assertIn("[Protocol Error]", output)
         execute_mock.assert_not_called()
+
+    def test_prewarm_releases_container_when_stop_arrives_during_creation(self):
+        stop_event = threading.Event()
+
+        def complete_after_stop(_session_id):
+            stop_event.set()
+
+        with (
+            patch.object(
+                chat,
+                "ensure_execution_backend_ready",
+                side_effect=complete_after_stop,
+            ) as ensure_backend,
+            patch.object(chat, "release_session_container") as release_container,
+        ):
+            chat._prewarm_execution_backend("session-prewarm-stop", stop_event)
+
+        ensure_backend.assert_called_once_with("session-prewarm-stop")
+        release_container.assert_called_once_with("session-prewarm-stop")
 
     def test_complete_code_then_answer_runs_once_and_saves_report(self):
         responses = iter([
@@ -463,7 +485,14 @@ class ChatProtocolIntegrationTest(unittest.TestCase):
                 yield "working", {"choices": [{"finish_reason": None}]}
                 time.sleep(0.01)
 
-        with patch.object(chat, "_iter_local_stream", side_effect=slow_stream):
+        with (
+            patch.object(chat, "_iter_local_stream", side_effect=slow_stream),
+            patch.object(
+                chat_router,
+                "release_session_container",
+                return_value=True,
+            ) as release_container,
+        ):
             worker = threading.Thread(
                 target=lambda: list(
                     chat.bot_stream(
@@ -481,6 +510,8 @@ class ChatProtocolIntegrationTest(unittest.TestCase):
 
         self.assertFalse(worker.is_alive())
         self.assertTrue(result["stopped"])
+        self.assertTrue(result["container_released"])
+        release_container.assert_called_once_with(session_id)
         with patch.object(
             chat,
             "_iter_local_stream",
@@ -524,7 +555,14 @@ class ChatProtocolIntegrationTest(unittest.TestCase):
             blocked_stream
         )
 
-        with patch.object(chat, "client", mock_client):
+        with (
+            patch.object(chat, "client", mock_client),
+            patch.object(
+                chat_router,
+                "release_session_container",
+                return_value=True,
+            ) as release_container,
+        ):
             worker = threading.Thread(
                 target=lambda: list(
                     chat.bot_stream(
@@ -545,6 +583,8 @@ class ChatProtocolIntegrationTest(unittest.TestCase):
         self.assertTrue(blocked_stream.closed.is_set())
         self.assertFalse(worker.is_alive())
         self.assertTrue(result["stopped"])
+        self.assertTrue(result["container_released"])
+        release_container.assert_called_once_with(session_id)
         self.assertLess(elapsed, 1)
         Path(workspace.get_session_workspace(session_id), "partial.csv").write_text(
             "value\n1\n",

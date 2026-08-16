@@ -17,6 +17,7 @@ from ..services.chat import (
     wait_for_session_run_release,
 )
 from ..services.execution_service import execute_managed_code
+from ..services.docker_executor import release_session_container
 from ..services.session_state import (
     replace_messages,
     update_task_config,
@@ -195,8 +196,16 @@ async def stop_chat(body: dict = Body(default={})):
             status_code=504,
             detail="Timed out waiting for the active analysis to stop",
         )
+    try:
+        container_released = await run_in_threadpool(release_session_container, session_id)
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Analysis stopped, but the execution container could not be released",
+        ) from exc
     return {
         "message": "analysis stopped",
         "session_id": session_id,
         "stopped": True,
+        "container_released": container_released,
     }

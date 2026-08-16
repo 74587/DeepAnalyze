@@ -17,7 +17,7 @@ import openai
 
 from .execution import build_file_block
 from .execution_service import execute_managed_code
-from .docker_executor import ensure_execution_backend_ready
+from .docker_executor import ensure_execution_backend_ready, release_session_container
 from .action_protocol import (
     ProtocolValidationError,
     find_completed_action_end,
@@ -627,11 +627,18 @@ def _save_answer_markdown_report(
     return report_path
 
 
-def _prewarm_execution_backend(session_id: str) -> None:
+def _prewarm_execution_backend(
+    session_id: str,
+    stop_event: threading.Event,
+) -> None:
     """Allocate/reuse the session container while the model is still generating,
     so the first <Code> block does not pay the container start-up cost."""
+    if stop_event.is_set():
+        return
     try:
         ensure_execution_backend_ready(session_id)
+        if stop_event.is_set():
+            release_session_container(session_id)
     except Exception as exc:  # pragma: no cover - best-effort warm-up
         logger.warning("container prewarm failed for %s: %s", session_id, exc)
 
@@ -661,7 +668,7 @@ def bot_stream(
         if settings.use_docker_execution:
             threading.Thread(
                 target=_prewarm_execution_backend,
-                args=(session_id,),
+                args=(session_id, stop_event),
                 daemon=True,
             ).start()
 

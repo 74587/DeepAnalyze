@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import shutil
 import subprocess
 import threading
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path, PurePosixPath
 
 from ..settings import settings
@@ -16,6 +18,11 @@ from .workspace import resolve_workspace_root, validate_session_id
 
 MANAGED_LABEL_KEY = "deepanalyze.managed"
 SESSION_LABEL_KEY = "deepanalyze.session"
+APP_LABEL_KEY = "deepanalyze.app"
+APP_LABEL_VALUE = "chat-v2"
+OWNER_LABEL_KEY = "deepanalyze.owner"
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -65,10 +72,30 @@ def _sanitize_session_id(session_id: str) -> str:
     return normalized[:48]
 
 
-def _container_name_for_session(session_id: str) -> str:
+def _deployment_owner_id() -> str:
+    workspace_base = str(Path(settings.workspace_base_dir).resolve()).replace("\\", "/")
+    return hashlib.sha256(workspace_base.casefold().encode("utf-8")).hexdigest()[:16]
+
+
+def _legacy_container_name_for_session(session_id: str) -> str:
     validated_session_id = validate_session_id(session_id)
     prefix = settings.docker_container_name.strip() or "deepanalyze-chat-exec"
     digest = hashlib.sha256(validated_session_id.encode("utf-8")).hexdigest()[:12]
+    suffix = f"{_sanitize_session_id(validated_session_id)[:32]}-{digest}"
+    return f"{prefix}-{suffix}"[:120]
+
+
+def _v0_container_name_for_session(session_id: str) -> str:
+    validated_session_id = validate_session_id(session_id)
+    prefix = settings.docker_container_name.strip() or "deepanalyze-chat-exec"
+    return f"{prefix}-{_sanitize_session_id(validated_session_id)}"[:120]
+
+
+def _container_name_for_session(session_id: str) -> str:
+    validated_session_id = validate_session_id(session_id)
+    prefix = settings.docker_container_name.strip() or "deepanalyze-chat-exec"
+    identity = f"{_deployment_owner_id()}:{validated_session_id}"
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:12]
     suffix = f"{_sanitize_session_id(validated_session_id)[:32]}-{digest}"
     return f"{prefix}-{suffix}"[:120]
 
@@ -78,6 +105,17 @@ def _container_exists(container_name: str) -> bool:
         ["ps", "-a", "--filter", f"name=^{container_name}$", "--format", "{{.Names}}"],
         check=False,
     )
+    return container_name in (completed.stdout or "").splitlines()
+
+
+def _container_exists_checked(container_name: str) -> bool:
+    completed = _run_docker_command(
+        ["ps", "-a", "--filter", f"name=^{container_name}$", "--format", "{{.Names}}"],
+        check=False,
+    )
+    if completed.returncode != 0:
+        details = (completed.stderr or completed.stdout or "unknown Docker error").strip()
+        raise RuntimeError(f"Failed to query container {container_name}: {details}")
     return container_name in (completed.stdout or "").splitlines()
 
 
@@ -98,24 +136,28 @@ def _image_exists(image_name: str) -> bool:
     return completed.returncode == 0
 
 
-def _container_matches_session(
-    container_name: str,
-    session_id: str,
-    session_workspace: Path,
-) -> bool:
+def _inspect_container(container_name: str) -> dict | None:
     completed = _run_docker_command(
         ["inspect", container_name],
         check=False,
         timeout=20,
     )
     if completed.returncode != 0:
-        return False
+        return None
     try:
         payload = json.loads(completed.stdout or "[]")[0]
-        labels = payload.get("Config", {}).get("Labels", {}) or {}
-        mounts = payload.get("Mounts", []) or []
     except (IndexError, TypeError, ValueError):
-        return False
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _payload_matches_session(
+    payload: dict,
+    session_id: str,
+    session_workspace: Path,
+) -> bool:
+    labels = payload.get("Config", {}).get("Labels", {}) or {}
+    mounts = payload.get("Mounts", []) or []
     if labels.get(MANAGED_LABEL_KEY) != "true" or labels.get(SESSION_LABEL_KEY) != session_id:
         return False
     expected_source = session_workspace.resolve()
@@ -124,6 +166,88 @@ def _container_matches_session(
         and Path(str(mount.get("Source") or "")).resolve() == expected_source
         for mount in mounts
     )
+
+
+def _payload_mounts_workspace(payload: dict, workspace: Path) -> bool:
+    expected_source = workspace.resolve()
+    return any(
+        mount.get("Destination") == settings.docker_workspace_dir
+        and Path(str(mount.get("Source") or "")).resolve() == expected_source
+        for mount in (payload.get("Mounts", []) or [])
+    )
+
+
+def _container_matches_session(
+    container_name: str,
+    session_id: str,
+    session_workspace: Path,
+) -> bool:
+    payload = _inspect_container(container_name)
+    return bool(payload and _payload_matches_session(payload, session_id, session_workspace))
+
+
+def _container_matches_current_session(
+    container_name: str,
+    session_id: str,
+    session_workspace: Path,
+) -> bool:
+    payload = _inspect_container(container_name)
+    return bool(
+        payload
+        and _payload_matches_session(payload, session_id, session_workspace)
+        and _container_belongs_to_current_app(container_name, payload)
+    )
+
+
+def _container_identity(payload: dict) -> tuple[str, str]:
+    labels = payload.get("Config", {}).get("Labels", {}) or {}
+    return str(labels.get(APP_LABEL_KEY) or ""), str(labels.get(OWNER_LABEL_KEY) or "")
+
+
+def _container_belongs_to_current_app(container_name: str, payload: dict) -> bool:
+    labels = payload.get("Config", {}).get("Labels", {}) or {}
+    if labels.get(MANAGED_LABEL_KEY) != "true":
+        return False
+    session_id = str(labels.get(SESSION_LABEL_KEY) or "")
+    try:
+        validated_session_id = validate_session_id(session_id)
+    except Exception:
+        return False
+
+    workspace_base = Path(settings.workspace_base_dir).resolve()
+    session_workspace = workspace_base / validated_session_id
+    app_label, owner_label = _container_identity(payload)
+    if app_label or owner_label:
+        return (
+            app_label == APP_LABEL_VALUE
+            and owner_label == _deployment_owner_id()
+            and container_name == _container_name_for_session(validated_session_id)
+            and _payload_matches_session(payload, validated_session_id, session_workspace)
+        )
+
+    image_name = str(payload.get("Config", {}).get("Image") or "")
+    if image_name != settings.docker_image:
+        return False
+    if container_name == _legacy_container_name_for_session(validated_session_id):
+        return _payload_matches_session(payload, validated_session_id, session_workspace)
+    return (
+        container_name == _v0_container_name_for_session(validated_session_id)
+        and _payload_mounts_workspace(payload, workspace_base)
+    )
+
+
+def _container_started_timestamp(payload: dict, fallback: float) -> float:
+    raw_value = str(
+        payload.get("State", {}).get("StartedAt") or payload.get("Created") or ""
+    ).strip()
+    if not raw_value:
+        return fallback
+    normalized = raw_value.replace("Z", "+00:00")
+    normalized = re.sub(r"(\.\d{6})\d+(?=[+-])", r"\1", normalized)
+    try:
+        return datetime.fromisoformat(normalized).timestamp()
+    except ValueError:
+        return fallback
 
 
 def _touch_container(session_id: str, container_name: str, *, created_by_app: bool, started_by_app: bool) -> None:
@@ -144,10 +268,51 @@ def _touch_container(session_id: str, container_name: str, *, created_by_app: bo
 
 
 def _remove_container(container_name: str, *, remove: bool) -> None:
-    if _container_is_running(container_name):
-        _run_docker_command(["stop", container_name], check=False, timeout=20)
-    if remove:
-        _run_docker_command(["rm", "-f", container_name], check=False, timeout=20)
+    action = ["rm", "-f", container_name] if remove else ["stop", container_name]
+    completed = _run_docker_command(action, check=False, timeout=20)
+    if completed.returncode == 0:
+        return
+    details = (completed.stderr or completed.stdout or "unknown Docker error").strip()
+    if _container_exists_checked(container_name):
+        raise RuntimeError(f"Failed to release container {container_name}: {details}")
+
+
+def _discover_managed_containers(now: float) -> None:
+    completed = _run_docker_command(
+        [
+            "ps",
+            "-a",
+            "--filter",
+            f"label={MANAGED_LABEL_KEY}=true",
+            "--format",
+            "{{.Names}}",
+        ],
+        check=False,
+        timeout=30,
+    )
+    if completed.returncode != 0:
+        details = (completed.stderr or completed.stdout or "unknown Docker error").strip()
+        raise RuntimeError(f"Failed to discover managed containers: {details}")
+
+    for container_name in (completed.stdout or "").splitlines():
+        container_name = container_name.strip()
+        if not container_name:
+            continue
+        payload = _inspect_container(container_name)
+        if not payload or not _container_belongs_to_current_app(container_name, payload):
+            continue
+        labels = payload.get("Config", {}).get("Labels", {}) or {}
+        session_id = validate_session_id(str(labels.get(SESSION_LABEL_KEY) or ""))
+        _SESSION_CONTAINERS.setdefault(
+            session_id,
+            SessionContainerState(
+                session_id=session_id,
+                container_name=container_name,
+                created_by_app=True,
+                started_by_app=bool(payload.get("State", {}).get("Running")),
+                last_used_at=_container_started_timestamp(payload, now),
+            ),
+        )
 
 
 def _cleanup_idle_session_containers(now: float | None = None) -> None:
@@ -165,22 +330,60 @@ def _cleanup_idle_session_containers(now: float | None = None) -> None:
         if now - state.last_used_at >= ttl
     ]
     for session_id in expired_sessions:
-        state = _SESSION_CONTAINERS.pop(session_id, None)
+        state = _SESSION_CONTAINERS.get(session_id)
         if state is None:
             continue
         try:
             _remove_container(state.container_name, remove=state.created_by_app)
-        except RuntimeError:
-            # Best-effort reclamation; never let cleanup break the caller.
+        except RuntimeError as exc:
+            logger.warning(
+                "idle container cleanup failed session_id=%s container=%s error=%s",
+                session_id,
+                state.container_name,
+                exc,
+            )
             continue
+        if _SESSION_CONTAINERS.get(session_id) is state:
+            _SESSION_CONTAINERS.pop(session_id, None)
 
 
-def cleanup_idle_containers() -> None:
+def cleanup_idle_containers(now: float | None = None) -> None:
     """Public entry point for the periodic idle-container reaper."""
     if not settings.use_docker_execution:
         return
     with _DOCKER_LOCK:
-        _cleanup_idle_session_containers()
+        effective_now = now or time.time()
+        _discover_managed_containers(effective_now)
+        _cleanup_idle_session_containers(effective_now)
+
+
+def release_session_container(session_id: str) -> bool:
+    """Release current and legacy execution containers for one session."""
+    if not settings.use_docker_execution:
+        return False
+
+    validated_session_id = validate_session_id(session_id)
+    candidate_names = [
+        _container_name_for_session(validated_session_id),
+        _legacy_container_name_for_session(validated_session_id),
+        _v0_container_name_for_session(validated_session_id),
+    ]
+    released = False
+    with _DOCKER_LOCK:
+        for container_name in dict.fromkeys(candidate_names):
+            if not _container_exists_checked(container_name):
+                continue
+            payload = _inspect_container(container_name)
+            if not payload or not _container_belongs_to_current_app(container_name, payload):
+                raise RuntimeError(
+                    f"Execution container {container_name} failed ownership validation"
+                )
+            _remove_container(container_name, remove=True)
+            released = True
+        if released:
+            _SESSION_CONTAINERS.pop(validated_session_id, None)
+            logger.info("session container released session_id=%s", validated_session_id)
+    return released
 
 
 def ensure_execution_backend_ready(session_id: str | None = None) -> None:
@@ -195,7 +398,7 @@ def ensure_execution_backend_ready(session_id: str | None = None) -> None:
         _cleanup_idle_session_containers()
 
         if _container_is_running(container_name):
-            if not _container_matches_session(
+            if not _container_matches_current_session(
                 container_name, validated_session_id, session_workspace
             ):
                 raise RuntimeError("Existing execution container failed isolation validation")
@@ -208,7 +411,7 @@ def ensure_execution_backend_ready(session_id: str | None = None) -> None:
             return
 
         if _container_exists(container_name):
-            if not _container_matches_session(
+            if not _container_matches_current_session(
                 container_name, validated_session_id, session_workspace
             ):
                 raise RuntimeError("Existing execution container failed isolation validation")
@@ -236,6 +439,10 @@ def ensure_execution_backend_ready(session_id: str | None = None) -> None:
                 f"{MANAGED_LABEL_KEY}=true",
                 "--label",
                 f"{SESSION_LABEL_KEY}={validated_session_id}",
+                "--label",
+                f"{APP_LABEL_KEY}={APP_LABEL_VALUE}",
+                "--label",
+                f"{OWNER_LABEL_KEY}={_deployment_owner_id()}",
                 "--cap-drop",
                 "ALL",
                 "--security-opt",
@@ -279,9 +486,16 @@ def shutdown_execution_backend() -> None:
         for session_id, state in list(_SESSION_CONTAINERS.items()):
             try:
                 _remove_container(state.container_name, remove=state.created_by_app)
-            except RuntimeError:
-                pass
-            _SESSION_CONTAINERS.pop(session_id, None)
+            except RuntimeError as exc:
+                logger.warning(
+                    "shutdown container cleanup failed session_id=%s container=%s error=%s",
+                    session_id,
+                    state.container_name,
+                    exc,
+                )
+                continue
+            if _SESSION_CONTAINERS.get(session_id) is state:
+                _SESSION_CONTAINERS.pop(session_id, None)
 
 
 def _resolve_container_workdir(workspace_dir: str, session_id: str) -> str:

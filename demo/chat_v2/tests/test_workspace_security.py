@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from fastapi import HTTPException, UploadFile
 
+from backend_app.routers import workspace as workspace_router
 from backend_app.services import workspace
 
 
@@ -154,6 +155,52 @@ class WorkspaceSecurityTest(unittest.IsolatedAsyncioTestCase):
             self.assertFalse((root / "generated").exists())
             self.assertTrue(internal_marker.exists())
             self.assertEqual([file["path"] for file in result["files"]], ["penguins.csv"])
+
+    async def test_clear_route_releases_container_before_deleting_files(self):
+        session_id = "session-clear-route"
+        root = workspace.resolve_workspace_root(session_id)
+        old_file = root / "old.csv"
+        old_file.write_text("old", encoding="utf-8")
+
+        with patch.object(
+            workspace_router,
+            "release_session_container",
+            return_value=True,
+        ) as release_container:
+            result = await workspace_router.clear_workspace(session_id)
+
+        release_container.assert_called_once_with(session_id)
+        self.assertFalse(old_file.exists())
+        self.assertEqual(result["message"], "Workspace cleared successfully")
+
+    async def test_sample_route_releases_container_when_replacing_workspace(self):
+        roomy_settings = replace(
+            self.settings,
+            upload_max_file_bytes=2_000_000,
+            workspace_max_bytes=10_000_000,
+            workspace_max_files=10,
+        )
+        session_id = "session-sample-route"
+        with (
+            patch.object(workspace, "settings", roomy_settings),
+            patch.object(
+                workspace_router,
+                "release_session_container",
+                return_value=True,
+            ) as release_container,
+        ):
+            root = workspace.resolve_workspace_root(session_id)
+            old_file = root / "old.csv"
+            old_file.write_text("old", encoding="utf-8")
+            result = await workspace_router.create_sample_data(
+                "palmer_penguins",
+                session_id,
+                True,
+            )
+
+        release_container.assert_called_once_with(session_id)
+        self.assertFalse(old_file.exists())
+        self.assertTrue(result["workspace_cleared"])
 
     def test_list_workspace_files_uses_explicit_generated_metadata(self):
         root = workspace.resolve_workspace_root("session-classification")
