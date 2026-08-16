@@ -12,8 +12,44 @@ function isGeneratedWorkspaceFile(file) {
   return path === "generated" || path.startsWith("generated/");
 }
 
+function isPythonWorkspaceFile(file) {
+  const values =
+    typeof file === "string"
+      ? [file]
+      : [file?.extension, file?.name, file?.path];
+  return values.some((value) => {
+    if (!value) return false;
+    let normalized = String(value).trim().toLowerCase();
+    try {
+      normalized = decodeURIComponent(normalized);
+    } catch {}
+    return (
+      normalized === "py" ||
+      normalized === ".py" ||
+      /\.py(?:$|[?#&])/.test(normalized)
+    );
+  });
+}
+
+function filterPythonFileLinks(content) {
+  return String(content || "")
+    .split(/\r?\n/)
+    .filter((line) => {
+      const links = line.matchAll(/!?\[([^\]]*)\]\(([^)]+)\)/g);
+      return !Array.from(links).some((match) =>
+        isPythonWorkspaceFile({ name: match[1], path: match[2] })
+      );
+    })
+    .join("\n")
+    .trim();
+}
+
+function isVisibleWorkspaceFile(file) {
+  return !(isGeneratedWorkspaceFile(file) && isPythonWorkspaceFile(file));
+}
+
 function countWorkspaceFiles(files) {
-  const list = Array.isArray(files) ? files : [];
+  const list = (Array.isArray(files) ? files : []).filter(isVisibleWorkspaceFile);
   const generated = list.filter(isGeneratedWorkspaceFile).length;
   return {
     uploaded: list.length - generated,
@@ -25,6 +61,7 @@ function countWorkspaceFiles(files) {
 function filterWorkspaceFiles(files, view, query = "") {
   const normalizedQuery = String(query || "").trim().toLowerCase();
   return (Array.isArray(files) ? files : [])
+    .filter(isVisibleWorkspaceFile)
     .filter((file) => {
       const generated = isGeneratedWorkspaceFile(file);
       if (view === "generated" && !generated) return false;
@@ -44,7 +81,9 @@ function filterWorkspaceFiles(files, view, query = "") {
 
 module.exports = {
   countWorkspaceFiles,
+  filterPythonFileLinks,
   filterWorkspaceFiles,
   isGeneratedWorkspaceFile,
+  isPythonWorkspaceFile,
   normalizeWorkspacePath,
 };

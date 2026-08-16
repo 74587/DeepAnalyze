@@ -58,8 +58,10 @@ import {
 } from "@/lib/session-state";
 import {
   countWorkspaceFiles,
+  filterPythonFileLinks,
   filterWorkspaceFiles,
   isGeneratedWorkspaceFile,
+  isPythonWorkspaceFile,
   normalizeWorkspacePath,
 } from "@/lib/workspace-files";
 import {
@@ -1874,7 +1876,7 @@ export function ThreePanelInterface() {
 
   const generatedBundleCounts = useMemo(() => {
     const generatedFiles = workspaceFiles.filter(
-      (file) => isGeneratedBundleFile(file)
+      (file) => isGeneratedBundleFile(file) && !isPythonWorkspaceFile(file)
     );
     return {
       all: generatedFiles.length,
@@ -3348,7 +3350,10 @@ export function ThreePanelInterface() {
     () =>
       dedupeGeneratedDisplayFiles(
         rightPanelSourceFiles
-          .filter((file) => isGeneratedWorkspaceFile(file))
+          .filter(
+            (file) =>
+              isGeneratedWorkspaceFile(file) && !isPythonWorkspaceFile(file)
+          )
           .sort((left, right) => right.name.localeCompare(left.name))
       ).slice(0, 8),
     [dedupeGeneratedDisplayFiles, isGeneratedWorkspaceFile, rightPanelSourceFiles]
@@ -3963,7 +3968,8 @@ export function ThreePanelInterface() {
       let sectionBody = match.content;
       let fileGallery: JSX.Element | null = null;
       if (match.type === "File") {
-        const files = parseGeneratedFiles(match.content);
+        sectionBody = filterPythonFileLinks(match.content);
+        const files = parseGeneratedFiles(sectionBody);
         if (files.length) {
           fileGallery = (
             <div className="mt-3">
@@ -4015,6 +4021,11 @@ export function ThreePanelInterface() {
             </div>
           );
         }
+      }
+
+      if (match.type === "File" && !sectionBody && !fileGallery) {
+        lastPosition = match.position + match.fullMatch.length;
+        return;
       }
 
       parts.push(

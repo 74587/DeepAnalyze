@@ -1,6 +1,7 @@
 export type WorkspaceFileLike = {
   name?: string;
   path?: string;
+  extension?: string;
   is_generated?: boolean;
 };
 
@@ -10,6 +11,10 @@ export function normalizeWorkspacePath(path?: string | null): string;
 export function isGeneratedWorkspaceFile(
   file?: WorkspaceFileLike | null
 ): boolean;
+export function isPythonWorkspaceFile(
+  file?: WorkspaceFileLike | string | null
+): boolean;
+export function filterPythonFileLinks(content?: string | null): string;
 export function countWorkspaceFiles(files: WorkspaceFileLike[]): {
   uploaded: number;
   generated: number;
