@@ -8,9 +8,9 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 
 from ..services.chat import (
+    begin_session_run_stop_event,
     bot_stream,
     build_chat_runtime_config,
-    get_session_stop_event,
     release_session_run,
     request_stop,
     try_acquire_session_run,
@@ -44,8 +44,7 @@ async def execute_code_api(request: dict):
     session_lock = try_acquire_session_run(session_id)
     if session_lock is None:
         raise HTTPException(status_code=409, detail="Session already has an active execution")
-    stop_event = get_session_stop_event(session_id)
-    stop_event.clear()
+    stop_event = begin_session_run_stop_event(session_id)
     try:
         outcome = await run_in_threadpool(
             execute_managed_code,
@@ -185,7 +184,7 @@ async def chat(body: dict = Body(...)):
 @router.post("/chat/stop")
 async def stop_chat(body: dict = Body(default={})):
     session_id = validate_session_id(body.get("session_id", "default"))
-    request_stop(session_id)
+    await run_in_threadpool(request_stop, session_id)
     released = await run_in_threadpool(
         wait_for_session_run_release,
         session_id,

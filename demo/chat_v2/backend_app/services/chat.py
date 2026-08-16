@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import queue
 import re
 import threading
 import time
@@ -9,7 +10,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 import httpx
 import openai
@@ -40,6 +41,8 @@ _STOP_EVENTS: dict[str, threading.Event] = {}
 _STOP_EVENTS_LOCK = threading.Lock()
 _SESSION_RUN_LOCKS: dict[str, threading.Lock] = {}
 _SESSION_RUN_LOCKS_LOCK = threading.Lock()
+_ACTIVE_STREAM_CLOSERS: dict[str, tuple[object, Callable[[], None]]] = {}
+_ACTIVE_STREAM_CLOSERS_LOCK = threading.Lock()
 HEYWHALE_API_BASE = (
     "https://www.heywhale.com/api/model/services/691d42c36c6dda33df0bf645/app/v1"
 )
@@ -100,11 +103,113 @@ def _get_or_create_stop_event(session_id: str) -> threading.Event:
 
 
 def request_stop(session_id: str) -> None:
-    _get_or_create_stop_event(session_id).set()
+    sid = validate_session_id(session_id)
+    _get_or_create_stop_event(sid).set()
+    active_stream_closed = _close_active_stream(sid)
+    logger.info(
+        "analysis_stop_requested session_id=%s active_stream=%s",
+        sid,
+        active_stream_closed,
+    )
 
 
 def get_session_stop_event(session_id: str) -> threading.Event:
     return _get_or_create_stop_event(session_id)
+
+
+def begin_session_run_stop_event(session_id: str) -> threading.Event:
+    sid = validate_session_id(session_id)
+    event = threading.Event()
+    with _STOP_EVENTS_LOCK:
+        _STOP_EVENTS[sid] = event
+    return event
+
+
+def _register_active_stream(
+    session_id: str | None,
+    close: Callable[[], None],
+    cancel_event: threading.Event | None = None,
+) -> object | None:
+    if not session_id:
+        return None
+    sid = validate_session_id(session_id)
+    token = object()
+    with _ACTIVE_STREAM_CLOSERS_LOCK:
+        if cancel_event is not None and cancel_event.is_set():
+            should_close = True
+        else:
+            _ACTIVE_STREAM_CLOSERS[sid] = (token, close)
+            should_close = False
+    if should_close:
+        close()
+        return None
+    return token
+
+
+def _clear_active_stream(session_id: str | None, token: object | None) -> None:
+    if not session_id or token is None:
+        return
+    sid = validate_session_id(session_id)
+    with _ACTIVE_STREAM_CLOSERS_LOCK:
+        current = _ACTIVE_STREAM_CLOSERS.get(sid)
+        if current is not None and current[0] is token:
+            _ACTIVE_STREAM_CLOSERS.pop(sid, None)
+
+
+def _close_active_stream(session_id: str | None) -> bool:
+    if not session_id:
+        return False
+    sid = validate_session_id(session_id)
+    with _ACTIVE_STREAM_CLOSERS_LOCK:
+        active_stream = _ACTIVE_STREAM_CLOSERS.pop(sid, None)
+    if active_stream is None:
+        return False
+
+    def close_stream() -> None:
+        try:
+            active_stream[1]()
+        except Exception as exc:
+            logger.warning("active model stream close failed for %s: %s", sid, exc)
+
+    threading.Thread(
+        target=close_stream,
+        daemon=True,
+        name="chat-model-stream-close",
+    ).start()
+    return True
+
+
+def _iter_stream_with_cancellation(
+    stream_iter,
+    stop_event: threading.Event,
+    session_id: str,
+):
+    items: queue.Queue[tuple[str, Any]] = queue.Queue()
+
+    def pump() -> None:
+        try:
+            for item in stream_iter:
+                items.put(("item", item))
+        except BaseException as exc:
+            items.put(("error", exc))
+        finally:
+            items.put(("done", None))
+
+    threading.Thread(target=pump, daemon=True, name="chat-model-stream").start()
+    try:
+        while not stop_event.is_set():
+            try:
+                kind, payload = items.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            if kind == "item":
+                yield payload
+                continue
+            if kind == "error":
+                raise payload
+            break
+    finally:
+        _close_active_stream(session_id)
 
 
 def _get_or_create_session_run_lock(session_id: str) -> threading.Lock:
@@ -270,6 +375,8 @@ def build_chat_runtime_config(payload: dict[str, Any] | None) -> ChatRuntimeConf
 def _iter_local_stream(
     conversation: list[dict[str, Any]],
     runtime_config: ChatRuntimeConfig,
+    session_id: str | None = None,
+    cancel_event: threading.Event | None = None,
 ):
     response = client.with_options(
         timeout=settings.model_stream_read_timeout_sec
@@ -284,11 +391,17 @@ def _iter_local_stream(
             "max_new_tokens": 32768,
         },
     )
+    close = getattr(response, "close", None)
+    stream_token = (
+        _register_active_stream(session_id, close, cancel_event)
+        if callable(close)
+        else None
+    )
     try:
         for chunk in response:
             yield chunk.choices[0].delta.content if chunk.choices else None, chunk
     finally:
-        close = getattr(response, "close", None)
+        _clear_active_stream(session_id, stream_token)
         if callable(close):
             close()
 
@@ -296,6 +409,8 @@ def _iter_local_stream(
 def _iter_heywhale_stream(
     conversation: list[dict[str, Any]],
     runtime_config: ChatRuntimeConfig,
+    session_id: str | None = None,
+    cancel_event: threading.Event | None = None,
 ):
     if not runtime_config.api_key:
         raise ValueError("HeyWhale API key is required")
@@ -328,38 +443,46 @@ def _iter_heywhale_stream(
                     json=request_body,
                 ) as response:
                     response.raise_for_status()
-                    for raw_line in response.iter_lines():
-                        if not raw_line:
-                            continue
-                        line = raw_line.strip()
-                        if not line:
-                            continue
-                        if line.startswith("data:"):
-                            line = line[5:].strip()
-                        if line == "[DONE]":
-                            break
-                        try:
-                            payload = json.loads(line)
-                        except Exception:
-                            continue
-                        has_stream_output = True
-                        choice = (payload.get("choices") or [{}])[0]
-                        delta = (choice.get("delta") or {}).get("content")
-                        finish_reason = choice.get("finish_reason")
-                        if delta:
-                            streamed_content += delta
-                        yield delta, {"choices": [{"finish_reason": finish_reason}]}
-                        if finish_reason == "stop":
-                            if (
-                                streamed_content.rfind("<Code>")
-                                > streamed_content.rfind("</Code>")
-                            ):
-                                yield "</Code>", {"choices": [{"finish_reason": None}]}
-                            elif (
-                                streamed_content.rfind("<Answer>")
-                                > streamed_content.rfind("</Answer>")
-                            ):
-                                yield "</Answer>", {"choices": [{"finish_reason": None}]}
+                    stream_token = _register_active_stream(
+                        session_id,
+                        response.close,
+                        cancel_event,
+                    )
+                    try:
+                        for raw_line in response.iter_lines():
+                            if not raw_line:
+                                continue
+                            line = raw_line.strip()
+                            if not line:
+                                continue
+                            if line.startswith("data:"):
+                                line = line[5:].strip()
+                            if line == "[DONE]":
+                                break
+                            try:
+                                payload = json.loads(line)
+                            except Exception:
+                                continue
+                            has_stream_output = True
+                            choice = (payload.get("choices") or [{}])[0]
+                            delta = (choice.get("delta") or {}).get("content")
+                            finish_reason = choice.get("finish_reason")
+                            if delta:
+                                streamed_content += delta
+                            yield delta, {"choices": [{"finish_reason": finish_reason}]}
+                            if finish_reason == "stop":
+                                if (
+                                    streamed_content.rfind("<Code>")
+                                    > streamed_content.rfind("</Code>")
+                                ):
+                                    yield "</Code>", {"choices": [{"finish_reason": None}]}
+                                elif (
+                                    streamed_content.rfind("<Answer>")
+                                    > streamed_content.rfind("</Answer>")
+                                ):
+                                    yield "</Answer>", {"choices": [{"finish_reason": None}]}
+                    finally:
+                        _clear_active_stream(session_id, stream_token)
                 return
             except httpx.HTTPError:
                 if has_stream_output or idx >= len(request_urls) - 1:
@@ -370,6 +493,8 @@ def _iter_heywhale_stream(
 def _iter_custom_stream(
     conversation: list[dict[str, Any]],
     runtime_config: ChatRuntimeConfig,
+    session_id: str | None = None,
+    cancel_event: threading.Event | None = None,
 ):
     request_body = {
         "model": runtime_config.model,
@@ -391,24 +516,32 @@ def _iter_custom_stream(
             json=request_body,
         ) as response:
             response.raise_for_status()
-            for raw_line in response.iter_lines():
-                if not raw_line:
-                    continue
-                line = raw_line.strip()
-                if not line:
-                    continue
-                if line.startswith("data:"):
-                    line = line[5:].strip()
-                if line == "[DONE]":
-                    break
-                try:
-                    payload = json.loads(line)
-                except Exception:
-                    continue
-                choice = (payload.get("choices") or [{}])[0]
-                delta = (choice.get("delta") or {}).get("content")
-                finish_reason = choice.get("finish_reason")
-                yield delta, {"choices": [{"finish_reason": finish_reason}]}
+            stream_token = _register_active_stream(
+                session_id,
+                response.close,
+                cancel_event,
+            )
+            try:
+                for raw_line in response.iter_lines():
+                    if not raw_line:
+                        continue
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+                    if line.startswith("data:"):
+                        line = line[5:].strip()
+                    if line == "[DONE]":
+                        break
+                    try:
+                        payload = json.loads(line)
+                    except Exception:
+                        continue
+                    choice = (payload.get("choices") or [{}])[0]
+                    delta = (choice.get("delta") or {}).get("content")
+                    finish_reason = choice.get("finish_reason")
+                    yield delta, {"choices": [{"finish_reason": finish_reason}]}
+            finally:
+                _clear_active_stream(session_id, stream_token)
 
 
 def _resolve_workspace_selection(
@@ -516,7 +649,7 @@ def bot_stream(
         yield _execution_status_block("Session Busy", "another analysis is already running")
         return
 
-    stop_event = _get_or_create_stop_event(session_id)
+    stop_event = begin_session_run_stop_event(session_id)
     try:
         conversation = deepcopy(messages or [])
         is_initial_conversation = not any(
@@ -548,7 +681,6 @@ def bot_stream(
         round_count = 0
         code_execution_count = 0
         started_at = time.monotonic()
-        stop_event.clear()
         while not finished:
             if stop_event.is_set():
                 break
@@ -569,18 +701,37 @@ def bot_stream(
             cur_res = ""
             initial_stream_state = _InitialStreamState()
             stream_iter = (
-                _iter_heywhale_stream(conversation, runtime_config)
+                _iter_heywhale_stream(
+                    conversation,
+                    runtime_config,
+                    session_id,
+                    stop_event,
+                )
                 if runtime_config.provider == "heywhale"
                 else (
-                    _iter_custom_stream(conversation, runtime_config)
+                    _iter_custom_stream(
+                        conversation,
+                        runtime_config,
+                        session_id,
+                        stop_event,
+                    )
                     if runtime_config.provider == "custom"
-                    else _iter_local_stream(conversation, runtime_config)
+                    else _iter_local_stream(
+                        conversation,
+                        runtime_config,
+                        session_id,
+                        stop_event,
+                    )
                 )
             )
             try:
                 stream_model_output = None
                 pending_model_deltas: list[str] = []
-                for delta, chunk in stream_iter:
+                for delta, chunk in _iter_stream_with_cancellation(
+                    stream_iter,
+                    stop_event,
+                    session_id,
+                ):
                     if stop_event.is_set():
                         break
                     if time.monotonic() - started_at >= settings.chat_max_duration_sec:
@@ -633,6 +784,8 @@ def bot_stream(
                     if find_completed_action_end(cur_res) is not None:
                         break
             except (httpx.HTTPError, openai.OpenAIError) as exc:
+                if stop_event.is_set():
+                    break
                 yield _execution_status_block("Model Error", str(exc))
                 return
 

@@ -1236,6 +1236,10 @@ export function ThreePanelInterface() {
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(
     null
   );
+  const updateTypingState = useCallback((value: boolean) => {
+    isTypingRef.current = value;
+    setIsTyping(value);
+  }, []);
   // const [clearChatOpen, setClearChatOpen] = useState(false); // Removed redundant state
 
   // 节流滚动到底部
@@ -5255,7 +5259,7 @@ export function ThreePanelInterface() {
       }
       controller?.abort();
       streamAbortControllerRef.current = null;
-      setIsTyping(false);
+      updateTypingState(false);
       setStreamingMessageId(null);
     } catch (error) {
       console.warn("stop stream failed", error);
@@ -5269,7 +5273,7 @@ export function ThreePanelInterface() {
     } finally {
       setIsStopping(false);
     }
-  }, [sessionId, uiLanguage]);
+  }, [sessionId, uiLanguage, updateTypingState]);
 
   const handleSendMessage = async () => {
     if (isTypingRef.current) {
@@ -5313,7 +5317,7 @@ export function ThreePanelInterface() {
     setMessages((prev) => [...prev, newMessage]);
     setInputValue("");
     setAttachments([]);
-    setIsTyping(true);
+    updateTypingState(true);
     setIsStopping(false);
     const abortController = new AbortController();
     streamAbortControllerRef.current = abortController;
@@ -5404,7 +5408,7 @@ export function ThreePanelInterface() {
         }
         streamAbortControllerRef.current = null;
         setIsStopping(false);
-        setIsTyping(false);
+        updateTypingState(false);
         return;
       }
 
@@ -5412,7 +5416,7 @@ export function ThreePanelInterface() {
       const reader = response.body?.getReader();
       const decoder = new TextDecoder();
       if (!reader) {
-        setIsTyping(false);
+        updateTypingState(false);
         setStreamingMessageId(null);
         streamAbortControllerRef.current = null;
         setIsStopping(false);
@@ -5512,7 +5516,7 @@ export function ThreePanelInterface() {
       // 结束后刷新一次文件列表确保无遗漏
       await loadWorkspaceFiles();
       await loadWorkspaceTree();
-      setIsTyping(false); // 结束加载状态
+      updateTypingState(false); // 结束加载状态
       setStreamingMessageId(null);
       streamAbortControllerRef.current = null;
       setIsStopping(false);
@@ -5545,7 +5549,7 @@ export function ThreePanelInterface() {
           ];
         });
       }
-      setIsTyping(false);
+      updateTypingState(false);
       setStreamingMessageId(null);
       streamAbortControllerRef.current = null;
       setIsStopping(false);

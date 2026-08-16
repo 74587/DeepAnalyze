@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from backend_app.services import chat, workspace
+from backend_app.services import chat, session_state, workspace
 from backend_app.routers import chat as chat_router
 
 
@@ -495,6 +495,108 @@ class ChatProtocolIntegrationTest(unittest.TestCase):
             )
         self.assertNotIn("[Session Busy]", output)
         self.assertIn("<Answer>done</Answer>", output)
+
+    def test_stop_endpoint_closes_a_blocked_upstream_stream(self):
+        session_id = "session-stop-blocked-stream"
+
+        class BlockingStream:
+            def __init__(self):
+                self.started = threading.Event()
+                self.closed = threading.Event()
+                self.release = threading.Event()
+                self.close_release = threading.Event()
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                self.started.set()
+                self.release.wait(timeout=2)
+                raise StopIteration
+
+            def close(self):
+                self.closed.set()
+                self.close_release.wait(timeout=2)
+
+        blocked_stream = BlockingStream()
+        mock_client = Mock()
+        mock_client.with_options.return_value.chat.completions.create.return_value = (
+            blocked_stream
+        )
+
+        with patch.object(chat, "client", mock_client):
+            worker = threading.Thread(
+                target=lambda: list(
+                    chat.bot_stream(
+                        [{"role": "user", "content": "analyze"}],
+                        [],
+                        session_id,
+                    )
+                ),
+                daemon=True,
+            )
+            worker.start()
+            self.assertTrue(blocked_stream.started.wait(timeout=1))
+            started_at = time.monotonic()
+            result = asyncio.run(chat_router.stop_chat({"session_id": session_id}))
+            elapsed = time.monotonic() - started_at
+            worker.join(timeout=1)
+
+        self.assertTrue(blocked_stream.closed.is_set())
+        self.assertFalse(worker.is_alive())
+        self.assertTrue(result["stopped"])
+        self.assertLess(elapsed, 1)
+        Path(workspace.get_session_workspace(session_id), "partial.csv").write_text(
+            "value\n1\n",
+            encoding="utf-8",
+        )
+        session_state.replace_messages(
+            session_id,
+            [{"id": "partial", "role": "assistant", "content": "partial"}],
+        )
+        workspace.clear_workspace(session_id)
+        session_state.replace_messages(session_id, [])
+        with patch.object(
+            chat,
+            "_iter_local_stream",
+            return_value=stream_text("<Answer>new task done</Answer>"),
+        ):
+            output = "".join(
+                chat.bot_stream(
+                    [{"role": "user", "content": "new task"}],
+                    [],
+                    session_id,
+                )
+            )
+        self.assertNotIn("[Session Busy]", output)
+        self.assertIn("<Answer>new task done</Answer>", output)
+        blocked_stream.close_release.set()
+        blocked_stream.release.set()
+
+    def test_cancelled_late_stream_cannot_replace_new_run_stream(self):
+        session_id = "session-late-cancelled-stream"
+        old_stop_event = chat.begin_session_run_stop_event(session_id)
+        old_stop_event.set()
+        new_stop_event = chat.begin_session_run_stop_event(session_id)
+        new_close = Mock()
+        new_token = chat._register_active_stream(
+            session_id,
+            new_close,
+            new_stop_event,
+        )
+        old_close = Mock()
+
+        old_token = chat._register_active_stream(
+            session_id,
+            old_close,
+            old_stop_event,
+        )
+
+        self.assertIsNone(old_token)
+        old_close.assert_called_once_with()
+        chat.request_stop(session_id)
+        new_close.assert_called_once_with()
+        chat._clear_active_stream(session_id, new_token)
 
     def test_explicit_empty_file_selection_does_not_include_all_files(self):
         workspace_dir = workspace.get_session_workspace("session-selection")
