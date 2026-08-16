@@ -138,10 +138,6 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
-import {
-  DATA_ANALYSIS_PROMPT_PRESETS,
-  type UILanguage,
-} from "@/lib/prompt-presets";
 
 interface Message {
   id: string;
@@ -291,6 +287,7 @@ const STREAMING_SECTION_FIXED_HEIGHT_PX = 140;
 const UPLOAD_ACCEPT_TYPES =
   ".csv,.tsv,.xlsx,.xls,.parquet,.sqlite,.db,.json,.txt,.log,.md,.markdown,.yml,.yaml,.pdf,image/*,.zip";
 type LlmProvider = "local" | "heywhale" | "custom";
+type UILanguage = "en" | "zh";
 const DEFAULT_MODEL_NAME = "DeepAnalyze-8B";
 const EXECUTE_RESULT_PREFIX = "# Execute Result\n";
 const EXECUTE_RESULT_NOTICE_EN =
@@ -898,13 +895,6 @@ export function ThreePanelInterface() {
         setCustomApiKey(savedCustomApiKey);
       }
 
-      const savedPresetId = localStorage.getItem("deepanalyze.selectedPresetId");
-      if (
-        savedPresetId &&
-        DATA_ANALYSIS_PROMPT_PRESETS.some((item) => item.id === savedPresetId)
-      ) {
-        setSelectedPresetId(savedPresetId);
-      }
     }
   }, []);
 
@@ -1128,11 +1118,6 @@ export function ThreePanelInterface() {
   const [heywhaleApiKey, setHeywhaleApiKey] = useState("");
   const [customApiBase, setCustomApiBase] = useState("");
   const [customApiKey, setCustomApiKey] = useState("");
-  const [selectedPresetId, setSelectedPresetId] = useState(
-    DATA_ANALYSIS_PROMPT_PRESETS[0]?.id || ""
-  );
-
-
   useEffect(() => {
     if (typeof window === "undefined") return;
     localStorage.setItem("deepanalyze.uiLanguage", uiLanguage);
@@ -1175,11 +1160,6 @@ export function ThreePanelInterface() {
     if (typeof window === "undefined") return;
     sessionStorage.setItem("deepanalyze.customApiKey", customApiKey);
   }, [customApiKey]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    localStorage.setItem("deepanalyze.selectedPresetId", selectedPresetId);
-  }, [selectedPresetId]);
 
   // 预览弹窗状态
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
@@ -1582,8 +1562,8 @@ export function ThreePanelInterface() {
       workspace: uiLanguage === "zh" ? "工作区" : "Workspace",
       workspaceHint:
         uiLanguage === "zh"
-          ? "文件、提示词与分类下载都放在这里"
-          : "Files, prompts, and bundle downloads live here.",
+          ? "上传数据、选择分析文件并管理输出"
+          : "Upload data, choose analysis files, and manage outputs.",
       language: uiLanguage === "zh" ? "系统语言" : "Language",
       uploaded: uiLanguage === "zh" ? "上传文件" : "Uploaded",
       generated: uiLanguage === "zh" ? "生成文件" : "Generated",
@@ -1591,11 +1571,6 @@ export function ThreePanelInterface() {
       search: uiLanguage === "zh" ? "搜索文件名或路径..." : "Search by file name or path...",
       recentPreview: uiLanguage === "zh" ? "最近预览" : "Recent Preview",
       preview: uiLanguage === "zh" ? "预览" : "Preview",
-      promptPresets: uiLanguage === "zh" ? "预设 Prompt" : "Preset Prompt",
-      promptHint:
-        uiLanguage === "zh"
-          ? "切换预设时，输入框会自动同步对应内容"
-          : "Selecting a preset automatically updates the input box.",
       systemPrompt: "System Prompt",
       systemPromptPlaceholder:
         uiLanguage === "zh"
@@ -1607,8 +1582,6 @@ export function ThreePanelInterface() {
         uiLanguage === "zh"
           ? "当前筛选条件下没有文件"
           : "No files match the current filter.",
-      autoInjected:
-        uiLanguage === "zh" ? "输入框已同步预设内容" : "Input synced with preset prompt",
       tableBundle: uiLanguage === "zh" ? "表格文件" : "Tables",
       imageBundle: uiLanguage === "zh" ? "图片文件" : "Images",
       otherBundle: uiLanguage === "zh" ? "其他文件" : "Others",
@@ -1624,8 +1597,6 @@ export function ThreePanelInterface() {
           : "The center stays focused on chat, streaming analysis, and quick actions.",
       moveDialogToLeft:
         uiLanguage === "zh" ? "对话框移到左栏" : "Move Dialog Left",
-      presetsDescription:
-        uiLanguage === "zh" ? "预设会同步到输入框" : "Presets sync to the input box",
       emptySystemPrompt:
         uiLanguage === "zh" ? "默认留空" : "Default empty",
       modelProvider: uiLanguage === "zh" ? "模型来源" : "Model Provider",
@@ -1742,15 +1713,6 @@ export function ThreePanelInterface() {
     uiLanguage === "zh"
       ? "这里集中展示分析过程生成的表格、图表和报告。"
       : "Tables, charts, and reports created by the analysis appear here.";
-
-  const selectedPreset = useMemo(
-    () =>
-      DATA_ANALYSIS_PROMPT_PRESETS.find((item) => item.id === selectedPresetId) ||
-      DATA_ANALYSIS_PROMPT_PRESETS[0],
-    [selectedPresetId]
-  );
-
-  const selectedPresetPrompt = selectedPreset?.prompt[uiLanguage] || "";
 
   const rightPanelSourceFiles = useMemo(
     () =>
@@ -1910,18 +1872,6 @@ export function ThreePanelInterface() {
     uiLanguage,
   ]);
 
-  useEffect(() => {
-    if (!selectedPresetPrompt) return;
-    setInputValue((prev) => {
-      const isUnmodified =
-        !prev ||
-        DATA_ANALYSIS_PROMPT_PRESETS.some(
-          (item) => item.prompt.en === prev || item.prompt.zh === prev
-        );
-      return isUnmodified ? selectedPresetPrompt : prev;
-    });
-  }, [selectedPresetPrompt]);
-
   const generatedBundleCounts = useMemo(() => {
     const generatedFiles = workspaceFiles.filter(
       (file) => isGeneratedBundleFile(file)
@@ -1992,10 +1942,6 @@ export function ThreePanelInterface() {
       return "border-blue-200 bg-blue-50/70 dark:border-blue-900 dark:bg-blue-950/20";
     }
     return "border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-900/60";
-  }, []);
-
-  const handlePresetChange = useCallback((value: string) => {
-    setSelectedPresetId(value);
   }, []);
 
   const downloadGeneratedBundle = useCallback(
@@ -5657,8 +5603,8 @@ export function ThreePanelInterface() {
               onChange={(e) => setInputValue(e.target.value)}
               placeholder={
                 uiLanguage === "zh"
-                  ? "\u8f93\u5165\u4f60\u7684\u5206\u6790\u9700\u6c42\uff0c\u6216\u5728\u5de6\u4fa7\u5207\u6362\u9884\u8bbe Prompt..."
-                  : "Describe your analysis task, or pick a preset from the left panel..."
+                  ? "输入分析问题，或从左侧加载示例..."
+                  : "Enter an analysis question, or load a sample from the left..."
               }
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
@@ -5685,8 +5631,8 @@ export function ThreePanelInterface() {
                   onChange={(e) => setInputValue(e.target.value)}
                   placeholder={
                     uiLanguage === "zh"
-                      ? "\u8f93\u5165\u4f60\u7684\u5206\u6790\u9700\u6c42\uff0c\u6216\u5728\u5de6\u4fa7\u5207\u6362\u9884\u8bbe Prompt..."
-                      : "Describe your analysis task, or pick a preset from the left panel..."
+                      ? "输入分析问题，或从左侧加载示例..."
+                      : "Enter an analysis question, or load a sample from the left..."
                   }
                   onKeyDown={(e) => {
                     if (e.key === "Enter" && !e.shiftKey) {
@@ -5757,7 +5703,7 @@ export function ThreePanelInterface() {
       >
         <ResizablePanelGroup direction="horizontal" className="h-full">
           {/* Left Panel - Workspace Tree */}
-          <ResizablePanel defaultSize={28} minSize={20}>
+          <ResizablePanel defaultSize={25} minSize={20}>
             <div className="flex flex-col min-h-0 min-w-0 h-full bg-white/80 dark:bg-gray-950/80 border-r border-gray-200/70 dark:border-gray-800/70">
               <div className="flex items-start justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-800 shrink-0">
                 <div>
@@ -5784,9 +5730,9 @@ export function ThreePanelInterface() {
                 ref={treeContainerRef}
                 className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-3 py-3 space-y-3"
               >
-                <Card className="rounded-2xl border-gray-200/80 dark:border-gray-800/80 p-3 space-y-3">
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
+                <Collapsible className="border-b border-gray-200/80 pb-3 dark:border-gray-800/80">
+                  <div className="flex items-end gap-2">
+                      <div className="min-w-0 flex-1">
                         <div className="mb-1.5 text-xs font-medium text-gray-700 dark:text-gray-300">
                           {textLabels.language}
                         </div>
@@ -5794,7 +5740,7 @@ export function ThreePanelInterface() {
                           value={uiLanguage}
                           onValueChange={(value) => setUiLanguage(value as UILanguage)}
                         >
-                          <SelectTrigger className="w-full rounded-xl">
+                          <SelectTrigger className="h-9 w-full rounded-lg">
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
@@ -5803,39 +5749,22 @@ export function ThreePanelInterface() {
                           </SelectContent>
                         </Select>
                       </div>
-                      <div>
-                        <div className="mb-1.5 text-xs font-medium text-gray-700 dark:text-gray-300">
-                          {textLabels.promptPresets}
-                        </div>
-                        <Select value={selectedPresetId} onValueChange={handlePresetChange}>
-                          <SelectTrigger className="w-full rounded-xl">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {DATA_ANALYSIS_PROMPT_PRESETS.map((item) => (
-                              <SelectItem key={item.id} value={item.id}>
-                                {item.label[uiLanguage]}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
-                    </div>
-                    <Collapsible>
                       <CollapsibleTrigger asChild>
                         <Button
                           type="button"
-                          variant="ghost"
-                          className="h-9 w-full justify-between rounded-lg px-2 text-xs"
+                          variant="outline"
+                          className="h-9 shrink-0 justify-between rounded-lg px-3 text-xs"
+                          title={uiLanguage === "zh" ? "模型与提示词设置" : "Model & prompt settings"}
                         >
                           <span className="flex items-center gap-2">
                             <Settings2 className="h-3.5 w-3.5" />
-                            {uiLanguage === "zh" ? "模型与提示词设置" : "Model & prompt settings"}
+                            {uiLanguage === "zh" ? "设置" : "Settings"}
                           </span>
                           <ChevronDown className="h-3.5 w-3.5" />
                         </Button>
                       </CollapsibleTrigger>
-                      <CollapsibleContent className="space-y-3 border-t border-gray-100 pt-3 dark:border-gray-800">
+                  </div>
+                      <CollapsibleContent className="mt-3 space-y-3 border-t border-gray-100 pt-3 dark:border-gray-800">
                     <div>
                       <div className="mb-1.5 flex items-center justify-between">
                         <div className="text-xs font-medium text-gray-700 dark:text-gray-300">
@@ -5966,13 +5895,12 @@ export function ThreePanelInterface() {
                       </div>
                     )}
                       </CollapsibleContent>
-                    </Collapsible>
-                    {moveDialogToLeftPanel &&
-                      renderChatComposer(
-                        "rounded-2xl border border-gray-200/80 dark:border-gray-800/80 bg-gray-50/80 dark:bg-gray-900/40 p-3",
-                        { stacked: true }
-                      )}
-                  </Card>
+                </Collapsible>
+                {moveDialogToLeftPanel &&
+                  renderChatComposer(
+                    "rounded-xl border border-gray-200/80 dark:border-gray-800/80 bg-gray-50/80 dark:bg-gray-900/40 p-3",
+                    { stacked: true }
+                  )}
 
                 <div className="space-y-4">
                   <div
@@ -5992,8 +5920,8 @@ export function ThreePanelInterface() {
                       if (files && files.length) uploadToDir("", files);
                     }}
                   >
-                    <div className="flex min-h-[76px] items-center justify-between gap-3">
-                      <div className="flex min-w-0 items-center gap-3">
+                    <div className="flex min-h-[76px] flex-wrap items-center justify-between gap-3">
+                      <div className="flex min-w-[150px] flex-1 items-center gap-3">
                         <div className="rounded-lg bg-white/90 p-2 shadow-sm dark:bg-gray-950/90">
                           <Upload className="h-5 w-5" />
                         </div>
@@ -6001,7 +5929,7 @@ export function ThreePanelInterface() {
                           <div className="text-sm font-semibold text-slate-900 dark:text-white">
                             {textLabels.uploadPanelTitle}
                           </div>
-                          <div className="mt-1 truncate text-xs text-gray-500 dark:text-gray-400">
+                          <div className="mt-1 text-xs leading-4 text-gray-500 dark:text-gray-400">
                             {textLabels.uploadPanelHint}
                           </div>
                         </div>
@@ -6336,7 +6264,7 @@ export function ThreePanelInterface() {
           <ResizableHandle withHandle />
 
           {/* Middle Panel - Chat & Analysis */}
-          <ResizablePanel defaultSize={46} minSize={25}>
+          <ResizablePanel defaultSize={50} minSize={30}>
             <div className="flex flex-col min-h-0 min-w-0 h-full">
               {/* Header */}
               <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-800 shrink-0 bg-white/80 dark:bg-gray-950/80">
@@ -6484,8 +6412,8 @@ export function ThreePanelInterface() {
                       onChange={(e) => setInputValue(e.target.value)}
                       placeholder={
                         uiLanguage === "zh"
-                          ? "输入你的分析需求，或在左侧切换预设 Prompt..."
-                          : "Describe your analysis task, or pick a preset from the left panel..."
+                          ? "输入分析问题，或从左侧加载示例..."
+                          : "Enter an analysis question, or load a sample from the left..."
                       }
                       onKeyDown={(e) => {
                         if (e.key === "Enter" && !e.shiftKey) {
@@ -6535,7 +6463,7 @@ export function ThreePanelInterface() {
           <ResizableHandle withHandle />
 
           {/* Right Panel - Inspector */}
-          <ResizablePanel defaultSize={26} minSize={18}>
+          <ResizablePanel defaultSize={25} minSize={18}>
             <div className="flex h-full min-h-0 flex-col bg-white/80 dark:bg-gray-950/80 border-l border-gray-200/70 dark:border-gray-800/70">
               <div className="flex items-center justify-between border-b border-gray-200 dark:border-gray-800 px-4 py-2 shrink-0">
                 <div>
@@ -6752,7 +6680,7 @@ export function ThreePanelInterface() {
                         </span>
                       </div>
                       {filteredWorkspaceFiles.length ? (
-                        <div className="flex flex-wrap gap-3 p-3">
+                        <div className="flex flex-wrap gap-2 p-2">
                           {filteredWorkspaceFiles.map((file, index) => {
                             const isImage = file.category === "image" && !!file.preview_url;
                             const imageUrl = resolveWorkspaceFileUrl(file.preview_url || file.download_url);
@@ -6760,7 +6688,7 @@ export function ThreePanelInterface() {
                             return (
                               <button
                                 key={`${file.path || file.name}-${index}`}
-                                className={`group w-[156px] shrink-0 text-left rounded-2xl border p-2 transition-all hover:-translate-y-0.5 hover:shadow-md ${getFileAccentClasses(file)} ${selectedWorkspacePath === file.path ? "ring-2 ring-blue-300 dark:ring-blue-800" : ""}`}
+                                className={`group w-[124px] shrink-0 rounded-lg border p-1.5 text-left transition-all hover:-translate-y-0.5 hover:shadow-md ${getFileAccentClasses(file)} ${selectedWorkspacePath === file.path ? "ring-2 ring-blue-300 dark:ring-blue-800" : ""}`}
                                 onClick={() => {
                                   setSelectedWorkspacePath(file.path);
                                   openPreview(file);
@@ -6771,12 +6699,12 @@ export function ThreePanelInterface() {
                                 }}
                                 type="button"
                               >
-                                <div className="aspect-square overflow-hidden rounded-xl bg-white/80 dark:bg-gray-950/70 border border-white/60 dark:border-gray-800 flex items-center justify-center">
+                                <div className="aspect-[4/3] overflow-hidden rounded-md border border-white/60 bg-white/80 dark:border-gray-800 dark:bg-gray-950/70 flex items-center justify-center">
                                   {isImage ? (
                                     <img
                                       src={imageUrl}
                                       alt={file.name}
-                                      className="h-full w-full object-cover"
+                                      className="h-full w-full object-contain"
                                     />
                                   ) : file.category === "table" ? (
                                     <div className="flex flex-col items-center justify-center text-emerald-700 dark:text-emerald-300">
@@ -6805,11 +6733,11 @@ export function ThreePanelInterface() {
                                     </div>
                                   )}
                                 </div>
-                                <div className="px-1 pt-2">
+                                <div className="px-0.5 pt-1.5">
                                   <div className="truncate text-xs font-medium text-gray-900 dark:text-gray-100" title={file.path}>
                                     {file.name}
                                   </div>
-                                  <div className="mt-1 flex items-center justify-between gap-2 text-[11px] text-gray-500 dark:text-gray-400">
+                                  <div className="mt-0.5 flex items-center justify-between gap-1 text-[11px] text-gray-500 dark:text-gray-400">
                                     <span className="truncate">{formatFileSize(file.size)}</span>
                                     <Badge variant="secondary" className="rounded-full px-1.5 py-0 text-xs">
                                       {isGeneratedWorkspaceFile(file)
