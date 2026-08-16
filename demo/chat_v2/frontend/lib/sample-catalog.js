@@ -21,18 +21,7 @@ function findSampleSelection(datasets, datasetId, questionId) {
   return { dataset, question };
 }
 
-function mergeSampleFilePaths(currentPaths, files) {
-  const merged = new Set(currentPaths || []);
-  (Array.isArray(files) ? files : []).forEach((file) => {
-    if (file && typeof file.path === "string" && file.path) {
-      merged.add(file.path);
-    }
-  });
-  return merged;
-}
-
 module.exports = {
   findSampleSelection,
-  mergeSampleFilePaths,
   normalizeSampleCatalog,
 };

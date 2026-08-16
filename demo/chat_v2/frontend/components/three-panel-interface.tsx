@@ -64,7 +64,6 @@ import {
 } from "@/lib/workspace-files";
 import {
   findSampleSelection,
-  mergeSampleFilePaths,
   normalizeSampleCatalog,
 } from "@/lib/sample-catalog";
 import {
@@ -3068,6 +3067,7 @@ export function ThreePanelInterface() {
         buildApiUrlWithParams(API_CONFIG.ENDPOINTS.WORKSPACE_SAMPLE, {
           session_id: sessionId,
           sample_id: selection.dataset.id,
+          clear_existing: true,
         }),
         { method: "POST" }
       );
@@ -3077,7 +3077,9 @@ export function ThreePanelInterface() {
       const data = await response.json();
       const files = Array.isArray(data.files) ? (data.files as WorkspaceFile[]) : [];
       if (!files.length) throw new Error("sample response has no files");
-      setSelectedAnalysisFiles((current) => mergeSampleFilePaths(current, files));
+      setAttachments([]);
+      setUploadMsg("");
+      setSelectedAnalysisFiles(new Set(files.map((file) => file.path)));
       fileSelectionInitializedRef.current = true;
       setInputValue(selection.question.prompt[uiLanguage]);
       setSelectedWorkspacePath(files[0].path);

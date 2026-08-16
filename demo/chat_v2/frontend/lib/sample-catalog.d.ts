@@ -14,7 +14,3 @@ export function findSampleSelection(
   datasetId: string,
   questionId: string
 ): { dataset: SampleDatasetLike; question: SampleQuestionLike } | null;
-export function mergeSampleFilePaths(
-  currentPaths: Iterable<string>,
-  files: Array<{ path?: string }>
-): Set<string>;

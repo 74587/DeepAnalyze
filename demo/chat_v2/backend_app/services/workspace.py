@@ -888,11 +888,27 @@ def get_sample_catalog() -> dict:
     return {"datasets": list_sample_datasets()}
 
 
-def create_sample_data(session_id: str, sample_id: str) -> dict:
+def create_sample_data(
+    session_id: str,
+    sample_id: str,
+    *,
+    clear_existing: bool = False,
+) -> dict:
     """Copy a cataloged public dataset into the current session workspace."""
     dataset = get_sample_dataset(sample_id)
     sources = resolve_sample_files(dataset)
     workspace_root = resolve_workspace_root(session_id)
+
+    if clear_existing:
+        source_sizes = [source.stat().st_size for source in sources]
+        if any(size > settings.upload_max_file_bytes for size in source_sizes):
+            raise HTTPException(status_code=413, detail="Sample file size limit exceeded")
+        if len(sources) > settings.workspace_max_files:
+            raise HTTPException(status_code=413, detail="Workspace file count limit exceeded")
+        if sum(source_sizes) > settings.workspace_max_bytes:
+            raise HTTPException(status_code=413, detail="Workspace size limit exceeded")
+        clear_workspace(session_id)
+
     existing_files = [
         path
         for path in workspace_root.rglob("*")
@@ -945,6 +961,7 @@ def create_sample_data(session_id: str, sample_id: str) -> dict:
     return {
         "message": "Sample data is ready",
         "sample_id": dataset["id"],
+        "workspace_cleared": clear_existing,
         "files": [files_by_path[path] for path in loaded_paths],
     }
 

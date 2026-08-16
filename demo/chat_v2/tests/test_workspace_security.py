@@ -127,6 +127,34 @@ class WorkspaceSecurityTest(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(len(result["files"]), len(dataset["files"]))
                     self.assertTrue(all(file["size"] > 0 for file in result["files"]))
 
+    def test_sample_load_can_clear_workspace_first(self):
+        roomy_settings = replace(
+            self.settings,
+            upload_max_file_bytes=2_000_000,
+            workspace_max_bytes=10_000_000,
+            workspace_max_files=10,
+        )
+        with patch.object(workspace, "settings", roomy_settings):
+            root = workspace.resolve_workspace_root("session-replace-sample")
+            (root / "old-upload.csv").write_text("old", encoding="utf-8")
+            (root / "generated").mkdir()
+            (root / "generated" / "old-chart.png").write_bytes(b"old")
+            (root / workspace.INTERNAL_WORKSPACE_DIRNAME).mkdir()
+            internal_marker = root / workspace.INTERNAL_WORKSPACE_DIRNAME / "state.json"
+            internal_marker.write_text("{}", encoding="utf-8")
+
+            result = workspace.create_sample_data(
+                "session-replace-sample",
+                "palmer_penguins",
+                clear_existing=True,
+            )
+
+            self.assertTrue(result["workspace_cleared"])
+            self.assertFalse((root / "old-upload.csv").exists())
+            self.assertFalse((root / "generated").exists())
+            self.assertTrue(internal_marker.exists())
+            self.assertEqual([file["path"] for file in result["files"]], ["penguins.csv"])
+
     def test_list_workspace_files_uses_explicit_generated_metadata(self):
         root = workspace.resolve_workspace_root("session-classification")
         (root / "report.md").write_text("uploaded", encoding="utf-8")

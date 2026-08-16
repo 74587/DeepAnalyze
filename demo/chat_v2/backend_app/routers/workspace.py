@@ -102,8 +102,13 @@ async def upload_files(
 async def create_sample_data(
     sample_id: str = Query(...),
     session_id: str = Query("default"),
+    clear_existing: bool = Query(False),
 ):
-    return workspace_service.create_sample_data(session_id, sample_id)
+    return workspace_service.create_sample_data(
+        session_id,
+        sample_id,
+        clear_existing=clear_existing,
+    )
 
 
 @router.get("/workspace/samples")
