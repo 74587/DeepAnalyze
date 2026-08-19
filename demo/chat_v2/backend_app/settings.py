@@ -95,7 +95,7 @@ class Settings:
     http_server_host: str = os.getenv("DEEPANALYZE_FILE_SERVER_HOST", "localhost")
     http_server_port: int = _get_port_env("DEEPANALYZE_FILE_SERVER_PORT", 8100)
     backend_host: str = os.getenv("DEEPANALYZE_BACKEND_HOST", "0.0.0.0")
-    backend_port: int = _get_port_env("DEEPANALYZE_BACKEND_PORT", 8201)
+    backend_port: int = _get_port_env("DEEPANALYZE_BACKEND_PORT", 9000)
     frontend_port: int = _get_port_env("FRONTEND_PORT", 4000)
     execution_mode: str = os.getenv("DEEPANALYZE_EXECUTION_MODE", "docker")
     allow_unsafe_local_execution: bool = _get_bool_env(

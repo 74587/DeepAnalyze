@@ -177,7 +177,7 @@ stop.bat
 Default addresses after startup:
 
 - Frontend: `http://localhost:4000`
-- Backend API: `http://localhost:8201`
+- Backend API: `http://localhost:9000`
 - File service: `http://localhost:8100`
 
 Ports can be changed in `.env`. The startup and stop scripts use these values,
