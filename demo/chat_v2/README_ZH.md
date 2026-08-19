@@ -145,8 +145,16 @@ stop.bat
 默认地址：
 
 - 前端：`http://localhost:4000`
-- 后端 API：`http://localhost:8200`
+- 后端 API：`http://localhost:8201`
 - 文件服务：`http://localhost:8100`
+
+端口可在 `.env` 中修改。启动和停止脚本都会读取这些配置，启动脚本还会自动让前端连接到配置后的后端地址：
+
+```env
+DEEPANALYZE_BACKEND_PORT=8300
+DEEPANALYZE_FILE_SERVER_PORT=8100
+FRONTEND_PORT=4000
+```
 
 ## PDF 导出
 

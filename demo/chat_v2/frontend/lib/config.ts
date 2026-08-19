@@ -1,6 +1,6 @@
 export const API_CONFIG = {
   BACKEND_BASE_URL:
-    process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8200",
+    process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8201",
   AI_API_BASE_URL:
     process.env.NEXT_PUBLIC_AI_API_URL || "http://localhost:8000",
   WEBSOCKET_URL: process.env.NEXT_PUBLIC_WEBSOCKET_URL || "ws://localhost:8001",

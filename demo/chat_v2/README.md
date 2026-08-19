@@ -177,8 +177,17 @@ stop.bat
 Default addresses after startup:
 
 - Frontend: `http://localhost:4000`
-- Backend API: `http://localhost:8200`
+- Backend API: `http://localhost:8201`
 - File service: `http://localhost:8100`
+
+Ports can be changed in `.env`. The startup and stop scripts use these values,
+and the startup script automatically points the frontend at the configured backend:
+
+```env
+DEEPANALYZE_BACKEND_PORT=8300
+DEEPANALYZE_FILE_SERVER_PORT=8100
+FRONTEND_PORT=4000
+```
 
 ## PDF Export
 

@@ -45,6 +45,17 @@ def _get_float_env(name: str, default: float, *, minimum: float = 0.0) -> float:
         return default
 
 
+def _get_port_env(name: str, default: int) -> int:
+    raw = os.getenv(name, str(default))
+    try:
+        port = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be an integer between 1 and 65535") from exc
+    if not 1 <= port <= 65535:
+        raise ValueError(f"{name} must be between 1 and 65535")
+    return port
+
+
 _load_demo_env()
 
 
@@ -82,9 +93,10 @@ class Settings:
         str(Path(__file__).resolve().parent.parent / "workspace"),
     )
     http_server_host: str = os.getenv("DEEPANALYZE_FILE_SERVER_HOST", "localhost")
-    http_server_port: int = int(os.getenv("DEEPANALYZE_FILE_SERVER_PORT", "8100"))
+    http_server_port: int = _get_port_env("DEEPANALYZE_FILE_SERVER_PORT", 8100)
     backend_host: str = os.getenv("DEEPANALYZE_BACKEND_HOST", "0.0.0.0")
-    backend_port: int = int(os.getenv("DEEPANALYZE_BACKEND_PORT", "8200"))
+    backend_port: int = _get_port_env("DEEPANALYZE_BACKEND_PORT", 8201)
+    frontend_port: int = _get_port_env("FRONTEND_PORT", 4000)
     execution_mode: str = os.getenv("DEEPANALYZE_EXECUTION_MODE", "docker")
     allow_unsafe_local_execution: bool = _get_bool_env(
         "DEEPANALYZE_ALLOW_UNSAFE_LOCAL_EXECUTION",

@@ -48,9 +48,11 @@ pkill -f "react-scripts.*start" 2>/dev/null && echo "   Cleaned up react-scripts
 echo ""
 echo "Releasing ports..."
 
-# Release ports (sync with start.sh)
-FRONTEND_PORT=${FRONTEND_PORT:-4000}
-for port in 8100 8200 "$FRONTEND_PORT"; do
+# Release ports (sync with start.sh and .env)
+FILE_SERVER_PORT=$(python3 -c 'from backend_app.settings import settings; print(settings.http_server_port)')
+BACKEND_PORT=$(python3 -c 'from backend_app.settings import settings; print(settings.backend_port)')
+FRONTEND_PORT=$(python3 -c 'from backend_app.settings import settings; print(settings.frontend_port)')
+for port in "$FILE_SERVER_PORT" "$BACKEND_PORT" "$FRONTEND_PORT"; do
     # Only kill TCP LISTENers
     pids=$(lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null || true)
     if [ -n "$pids" ]; then
