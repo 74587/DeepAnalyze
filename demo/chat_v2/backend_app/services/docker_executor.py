@@ -21,6 +21,7 @@ SESSION_LABEL_KEY = "deepanalyze.session"
 APP_LABEL_KEY = "deepanalyze.app"
 APP_LABEL_VALUE = "chat-v2"
 OWNER_LABEL_KEY = "deepanalyze.owner"
+DOCKER_BUILD_TIMEOUT_SEC = 1800
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +135,65 @@ def _image_exists(image_name: str) -> bool:
         timeout=20,
     )
     return completed.returncode == 0
+
+
+def _ensure_docker_daemon_available() -> None:
+    completed = _run_docker_command(
+        ["info", "--format", "{{.ServerVersion}}"],
+        check=False,
+        timeout=20,
+    )
+    if completed.returncode == 0:
+        return
+    details = (completed.stderr or completed.stdout or "unknown Docker error").strip()
+    raise RuntimeError(
+        "Docker daemon is unavailable. Start Docker Desktop (or the Docker daemon) "
+        f"and retry. Details: {details}"
+    )
+
+
+def _ensure_docker_image_available() -> None:
+    if _image_exists(settings.docker_image):
+        return
+
+    dockerfile = Path(__file__).resolve().parents[2] / "Dockerfile.exec"
+    if not settings.docker_auto_build:
+        raise RuntimeError(
+            f"Docker image {settings.docker_image!r} was not found. "
+            f"Build it from {dockerfile.parent} or enable "
+            "DEEPANALYZE_DOCKER_AUTO_BUILD."
+        )
+    if not dockerfile.is_file():
+        raise RuntimeError(
+            f"Docker image {settings.docker_image!r} was not found and the build file "
+            f"does not exist: {dockerfile}"
+        )
+
+    logger.info(
+        "Docker image %s was not found; building it from %s",
+        settings.docker_image,
+        dockerfile,
+    )
+    completed = _run_docker_command(
+        [
+            "build",
+            "-t",
+            settings.docker_image,
+            "-f",
+            str(dockerfile),
+            str(dockerfile.parent),
+        ],
+        check=False,
+        timeout=DOCKER_BUILD_TIMEOUT_SEC,
+    )
+    if completed.returncode == 0:
+        logger.info("Docker image %s built successfully", settings.docker_image)
+        return
+    details = (completed.stderr or completed.stdout or "unknown Docker error").strip()
+    raise RuntimeError(
+        f"Failed to build Docker image {settings.docker_image!r} from {dockerfile}: "
+        f"{details}"
+    )
 
 
 def _inspect_container(container_name: str) -> dict | None:
@@ -424,11 +484,7 @@ def ensure_execution_backend_ready(session_id: str | None = None) -> None:
             )
             return
 
-        if not _image_exists(settings.docker_image):
-            raise RuntimeError(
-                "Docker image not found. Build it first with "
-                "`docker build -t deepanalyze-chat-exec:latest -f Dockerfile.exec .`"
-            )
+        _ensure_docker_image_available()
 
         docker_args = [
                 "run",
@@ -595,8 +651,5 @@ def validate_execution_backend_configuration() -> None:
         return
     if shutil.which("docker") is None:
         raise RuntimeError("Docker CLI was not found")
-    if not _image_exists(settings.docker_image):
-        raise RuntimeError(
-            f"Docker image {settings.docker_image!r} was not found. "
-            "Build it with `docker build -t deepanalyze-chat-exec:latest -f Dockerfile.exec .`."
-        )
+    _ensure_docker_daemon_available()
+    _ensure_docker_image_available()

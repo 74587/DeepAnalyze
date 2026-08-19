@@ -96,6 +96,10 @@ class Settings:
     docker_image: str = os.getenv(
         "DEEPANALYZE_DOCKER_IMAGE", "deepanalyze-chat-exec:latest"
     )
+    docker_auto_build: bool = _get_bool_env(
+        "DEEPANALYZE_DOCKER_AUTO_BUILD",
+        True,
+    )
     docker_container_name: str = os.getenv(
         "DEEPANALYZE_DOCKER_CONTAINER_NAME",
         "deepanalyze-chat-exec",

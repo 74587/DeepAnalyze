@@ -400,6 +400,60 @@ class DockerIsolationTest(unittest.TestCase):
             self.assertTrue(released)
             self.assertEqual(removed, [legacy_name])
 
+    def test_missing_execution_image_is_built_from_project_dockerfile(self):
+        safe_settings = replace(
+            docker_executor.settings,
+            docker_image="deepanalyze-test:latest",
+            docker_auto_build=True,
+        )
+        completed = type(
+            "Completed",
+            (),
+            {"returncode": 0, "stdout": "built", "stderr": ""},
+        )()
+        with (
+            patch.object(docker_executor, "settings", safe_settings),
+            patch.object(docker_executor, "_image_exists", return_value=False),
+            patch.object(
+                docker_executor,
+                "_run_docker_command",
+                return_value=completed,
+            ) as run_command,
+        ):
+            docker_executor._ensure_docker_image_available()
+
+        build_args = run_command.call_args.args[0]
+        dockerfile = Path(build_args[build_args.index("-f") + 1])
+        self.assertEqual(build_args[:3], ["build", "-t", "deepanalyze-test:latest"])
+        self.assertEqual(dockerfile.name, "Dockerfile.exec")
+        self.assertTrue(dockerfile.is_absolute())
+        self.assertEqual(Path(build_args[-1]), dockerfile.parent)
+
+    def test_missing_execution_image_respects_disabled_auto_build(self):
+        safe_settings = replace(
+            docker_executor.settings,
+            docker_image="managed-externally:latest",
+            docker_auto_build=False,
+        )
+        with (
+            patch.object(docker_executor, "settings", safe_settings),
+            patch.object(docker_executor, "_image_exists", return_value=False),
+            self.assertRaisesRegex(RuntimeError, "DEEPANALYZE_DOCKER_AUTO_BUILD"),
+        ):
+            docker_executor._ensure_docker_image_available()
+
+    def test_unavailable_docker_daemon_has_actionable_error(self):
+        failed = type(
+            "Completed",
+            (),
+            {"returncode": 1, "stdout": "", "stderr": "cannot connect"},
+        )()
+        with (
+            patch.object(docker_executor, "_run_docker_command", return_value=failed),
+            self.assertRaisesRegex(RuntimeError, "Start Docker Desktop"),
+        ):
+            docker_executor._ensure_docker_daemon_available()
+
 
 if __name__ == "__main__":
     unittest.main()

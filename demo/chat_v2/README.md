@@ -99,11 +99,18 @@ limits are applied from `.env`.
 DEEPANALYZE_EXECUTION_MODE=docker
 ```
 
-Important:
+At startup, the backend checks both the Docker CLI and daemon. If the execution
+image is missing, it is built automatically from the bundled `Dockerfile.exec`.
+The first startup takes longer because it downloads the base image and Python
+dependencies.
 
-- The system does not auto-build the Docker image
-- If the target machine has no image, Docker execution will fail immediately
-- You must build the image manually first
+Disable automatic builds when images are managed by an external deployment pipeline:
+
+```env
+DEEPANALYZE_DOCKER_AUTO_BUILD=false
+```
+
+The image can also be built manually:
 
 Example:
 
@@ -112,8 +119,7 @@ cd demo/chat_v2
 docker build -t deepanalyze-chat-exec:latest -f Dockerfile.exec .
 ```
 
-The backend validates the image during startup. Resource limits can be adjusted with
-`DEEPANALYZE_DOCKER_MEMORY`, `DEEPANALYZE_DOCKER_CPUS`,
+Resource limits can be adjusted with `DEEPANALYZE_DOCKER_MEMORY`, `DEEPANALYZE_DOCKER_CPUS`,
 `DEEPANALYZE_DOCKER_PIDS_LIMIT`, and `DEEPANALYZE_DOCKER_NETWORK_MODE`.
 
 ## Safety And Agent Budgets

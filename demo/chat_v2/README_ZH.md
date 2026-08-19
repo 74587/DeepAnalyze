@@ -79,11 +79,15 @@ Docker 是默认且满足沙箱隔离要求的执行模式。每个 session 使�
 DEEPANALYZE_EXECUTION_MODE=docker
 ```
 
-注意：
+后端启动时会检查 Docker CLI 和 Docker 守护进程。如果默认执行镜像不存在，系统会使用项目内的 `Dockerfile.exec` 自动构建。首次启动需要下载基础镜像和 Python 依赖，因此耗时会更长。
 
-- 系统不会自动构建 Docker 镜像
-- 如果目标机器没有镜像，Docker 执行会直接失败
-- 需要先手动构建镜像
+如需由外部部署流程管理镜像，可禁用自动构建：
+
+```env
+DEEPANALYZE_DOCKER_AUTO_BUILD=false
+```
+
+也可以手动构建：
 
 示例：
 
@@ -92,7 +96,7 @@ cd demo/chat_v2
 docker build -t deepanalyze-chat-exec:latest -f Dockerfile.exec .
 ```
 
-后端会在启动时检查 Docker CLI 和目标镜像。可以通过 `DEEPANALYZE_DOCKER_MEMORY`、`DEEPANALYZE_DOCKER_CPUS`、`DEEPANALYZE_DOCKER_PIDS_LIMIT` 和 `DEEPANALYZE_DOCKER_NETWORK_MODE` 调整资源限制。
+可以通过 `DEEPANALYZE_DOCKER_MEMORY`、`DEEPANALYZE_DOCKER_CPUS`、`DEEPANALYZE_DOCKER_PIDS_LIMIT` 和 `DEEPANALYZE_DOCKER_NETWORK_MODE` 调整资源限制。
 
 ## 安全边界与 Agent 预算
 
