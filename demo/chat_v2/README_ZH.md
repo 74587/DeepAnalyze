@@ -112,6 +112,17 @@ docker build -t deepanalyze-chat-exec:latest -f Dockerfile.exec .
 
 Agent 自动生成的 `<Code>` 与代码工作台手动复跑统一经过同一个执行服务。每次运行都会在 `generated/code/` 保存版本化脚本、登记新增或修改的 artifacts、记录自然语言修改指令与统一 diff，并生成可进入主聊天轨迹和报告导出的 Code/Execute/File 内容。
 
+对话输入区默认使用**自动模式**。切换到**手动模式**后，后端会在每次代码执行完成后暂停：此时浏览器已经显示 Execute 区块，但执行结果尚未发送给模型。用户可以直接继续，也可以先在输入框中填写追加指令再继续。非空追加指令会按以下固定格式附加到待发送的执行反馈后：
+
+```text
+<执行输出>
+
+# Additional Instruction
+<用户追加指令>
+```
+
+待续上下文保存在服务端 session 状态中，因此刷新浏览器后仍能恢复“等待继续”状态，同时 session API 不会暴露内部模型对话。
+
 ## 如何运行
 
 ### Linux / macOS

@@ -8,7 +8,7 @@ from unittest.mock import patch
 from fastapi import HTTPException, UploadFile
 
 from backend_app.routers import workspace as workspace_router
-from backend_app.services import workspace
+from backend_app.services import session_state, workspace
 
 
 class WorkspaceSecurityTest(unittest.IsolatedAsyncioTestCase):
@@ -161,6 +161,10 @@ class WorkspaceSecurityTest(unittest.IsolatedAsyncioTestCase):
         root = workspace.resolve_workspace_root(session_id)
         old_file = root / "old.csv"
         old_file.write_text("old", encoding="utf-8")
+        session_state.save_pending_continuation(
+            session_id,
+            {"conversation": [{"role": "user", "content": "analyze"}]},
+        )
 
         with patch.object(
             workspace_router,
@@ -172,6 +176,7 @@ class WorkspaceSecurityTest(unittest.IsolatedAsyncioTestCase):
         release_container.assert_called_once_with(session_id)
         self.assertFalse(old_file.exists())
         self.assertEqual(result["message"], "Workspace cleared successfully")
+        self.assertIsNone(session_state.load_pending_continuation(session_id))
 
     async def test_sample_route_releases_container_when_replacing_workspace(self):
         roomy_settings = replace(
@@ -192,6 +197,10 @@ class WorkspaceSecurityTest(unittest.IsolatedAsyncioTestCase):
             root = workspace.resolve_workspace_root(session_id)
             old_file = root / "old.csv"
             old_file.write_text("old", encoding="utf-8")
+            session_state.save_pending_continuation(
+                session_id,
+                {"conversation": [{"role": "user", "content": "analyze"}]},
+            )
             result = await workspace_router.create_sample_data(
                 "palmer_penguins",
                 session_id,
@@ -201,6 +210,7 @@ class WorkspaceSecurityTest(unittest.IsolatedAsyncioTestCase):
         release_container.assert_called_once_with(session_id)
         self.assertFalse(old_file.exists())
         self.assertTrue(result["workspace_cleared"])
+        self.assertIsNone(session_state.load_pending_continuation(session_id))
 
     def test_list_workspace_files_uses_explicit_generated_metadata(self):
         root = workspace.resolve_workspace_root("session-classification")

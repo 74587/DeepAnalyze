@@ -144,6 +144,23 @@ Each run saves a versioned script under `generated/code/`, registers changed art
 records the edit instruction and unified diff, and emits a Code/Execute/File trace that is
 included in later report exports.
 
+The chat composer defaults to **Auto** interaction mode. In **Manual** mode, the backend
+pauses after every code execution: the Execute block is already visible in the browser, but
+its result has not yet been sent to the model. Continue directly or enter an optional
+instruction before continuing. The backend appends a non-empty instruction to the pending
+execution feedback with this stable format:
+
+```text
+<execution output>
+
+# Additional Instruction
+<user instruction>
+```
+
+The pending continuation is stored in the server-side session state, so the waiting state
+survives a browser refresh without exposing the internal model conversation through the
+session API.
+
 ## Run
 
 ### Linux / macOS

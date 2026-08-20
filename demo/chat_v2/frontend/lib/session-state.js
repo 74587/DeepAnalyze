@@ -2,6 +2,14 @@ function buildSessionStorageKey(sessionId) {
   return `chat_messages_v2:${String(sessionId || "default")}`;
 }
 
+function normalizeInteractionMode(value) {
+  return value === "manual" ? "manual" : "auto";
+}
+
+function isAwaitingManualContinuation(interactionState) {
+  return interactionState?.status === "awaiting_user";
+}
+
 function normalizeSessionMessages(messages, now = () => new Date()) {
   if (!Array.isArray(messages)) return [];
   return messages
@@ -51,6 +59,8 @@ function toggleSelectedPath(currentPaths, path, selected) {
 
 module.exports = {
   buildSessionStorageKey,
+  normalizeInteractionMode,
+  isAwaitingManualContinuation,
   normalizeSessionMessages,
   serializeSessionMessages,
   toServerMessages,

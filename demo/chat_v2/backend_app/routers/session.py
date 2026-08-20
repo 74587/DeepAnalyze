@@ -3,7 +3,8 @@ from __future__ import annotations
 from fastapi import APIRouter, Body, Query
 
 from ..services.session_state import (
-    load_session_state,
+    clear_pending_continuation,
+    load_public_session_state,
     replace_messages,
     update_task_config,
 )
@@ -14,7 +15,13 @@ router = APIRouter()
 
 @router.get("/session/state")
 async def get_session_state(session_id: str = Query("default")):
-    return load_session_state(session_id)
+    return load_public_session_state(session_id)
+
+
+@router.delete("/session/pending")
+async def delete_session_pending(session_id: str = Query("default")):
+    clear_pending_continuation(session_id)
+    return {"session_id": session_id, "status": "idle"}
 
 
 @router.put("/session/messages")

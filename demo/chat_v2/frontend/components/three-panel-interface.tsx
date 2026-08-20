@@ -51,7 +51,9 @@ import { API_URLS, API_CONFIG, buildApiUrlWithParams } from "@/lib/config";
 import { buildLineDiff } from "@/lib/code-ai-edit";
 import {
   buildSessionStorageKey,
+  isAwaitingManualContinuation,
   normalizeSessionMessages,
+  normalizeInteractionMode,
   serializeSessionMessages,
   toServerMessages,
   toggleSelectedPath,
@@ -124,6 +126,8 @@ import {
   FileJson,
   ChevronLeft,
   Database,
+  Hand,
+  CirclePause,
   Settings2,
 } from "lucide-react";
 import { Tree, NodeApi } from "react-arborist";
@@ -268,8 +272,13 @@ interface SessionStatePayload {
     provider?: LlmProvider;
     model?: string;
     temperature?: number;
-  system_prompt?: string;
+    system_prompt?: string;
     ui_language?: UILanguage;
+    interaction_mode?: InteractionMode;
+  };
+  interaction_state?: {
+    status?: "idle" | "awaiting_user";
+    paused_at?: string;
   };
 }
 
@@ -290,6 +299,7 @@ const UPLOAD_ACCEPT_TYPES =
   ".csv,.tsv,.xlsx,.xls,.parquet,.sqlite,.db,.json,.txt,.log,.md,.markdown,.yml,.yaml,.pdf,image/*,.zip";
 type LlmProvider = "local" | "heywhale" | "custom";
 type UILanguage = "en" | "zh";
+type InteractionMode = "auto" | "manual";
 const DEFAULT_MODEL_NAME = "DeepAnalyze-8B";
 const EXECUTE_RESULT_PREFIX = "# Execute Result\n";
 const EXECUTE_RESULT_NOTICE_EN =
@@ -855,6 +865,12 @@ export function ThreePanelInterface() {
         setUiLanguage(savedLanguage);
       }
 
+      setInteractionMode(
+        normalizeInteractionMode(
+          localStorage.getItem("deepanalyze.interactionMode")
+        )
+      );
+
       const savedRequirements =
         localStorage.getItem("deepanalyze.systemPrompt");
       if (savedRequirements) {
@@ -1113,6 +1129,9 @@ export function ThreePanelInterface() {
   );
   const fileSelectionInitializedRef = useRef(false);
   const [uiLanguage, setUiLanguage] = useState<UILanguage>("en");
+  const [interactionMode, setInteractionMode] =
+    useState<InteractionMode>("auto");
+  const [manualPaused, setManualPaused] = useState(false);
   const [systemPrompt, setSystemPrompt] = useState("");
   const [llmProvider, setLlmProvider] = useState<LlmProvider>("local");
   const [customModelName, setCustomModelName] = useState(DEFAULT_MODEL_NAME);
@@ -1124,6 +1143,11 @@ export function ThreePanelInterface() {
     if (typeof window === "undefined") return;
     localStorage.setItem("deepanalyze.uiLanguage", uiLanguage);
   }, [uiLanguage]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    localStorage.setItem("deepanalyze.interactionMode", interactionMode);
+  }, [interactionMode]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -1316,6 +1340,7 @@ export function ThreePanelInterface() {
     if (!sessionId || typeof window === "undefined") return;
     let cancelled = false;
     setChatLoaded(false);
+    setManualPaused(false);
 
     const restoreSession = async () => {
       let restoredMessages: Message[] = [];
@@ -1341,6 +1366,12 @@ export function ThreePanelInterface() {
           if (task.ui_language === "zh" || task.ui_language === "en") {
             setUiLanguage(task.ui_language);
           }
+          if (task.interaction_mode) {
+            setInteractionMode(normalizeInteractionMode(task.interaction_mode));
+          }
+          setManualPaused(
+            isAwaitingManualContinuation(state.interaction_state)
+          );
         }
       } catch (error) {
         console.warn("load server session state failed", error);
@@ -1408,6 +1439,17 @@ export function ThreePanelInterface() {
     }
   }, [messages, chatLoaded, isTyping, sessionId]);
 
+  const discardPendingContinuation = useCallback(() => {
+    setManualPaused(false);
+    if (!sessionId) return;
+    void fetch(
+      buildApiUrlWithParams(API_CONFIG.ENDPOINTS.SESSION_PENDING, {
+        session_id: sessionId,
+      }),
+      { method: "DELETE" }
+    ).catch((error) => console.warn("clear pending continuation failed", error));
+  }, [sessionId]);
+
   // 一键清空聊天：保留欢迎消息（仅本地显示）
   const clearChat = () => {
     if (isTyping) {
@@ -1422,6 +1464,7 @@ export function ThreePanelInterface() {
       localOnly: true,
     };
     setMessages([welcome]);
+    discardPendingContinuation();
     try {
       if (typeof window !== "undefined") {
         localStorage.setItem(
@@ -1840,7 +1883,12 @@ export function ThreePanelInterface() {
 
   const latestTaskInstruction = useMemo(() => {
     for (let index = messages.length - 1; index >= 0; index -= 1) {
-      if (messages[index].sender === "user") return messages[index].content;
+      if (
+        messages[index].sender === "user" &&
+        !messages[index].id.startsWith("manual-instruction-")
+      ) {
+        return messages[index].content;
+      }
     }
     return inputValue;
   }, [inputValue, messages]);
@@ -1861,6 +1909,7 @@ export function ThreePanelInterface() {
             temperature: normalizedTemperature,
             system_prompt: systemPrompt.trim(),
             ui_language: uiLanguage,
+            interaction_mode: interactionMode,
           },
         }),
       }).catch((error) => console.warn("save task config failed", error));
@@ -1871,6 +1920,7 @@ export function ThreePanelInterface() {
     customModelName,
     systemPrompt,
     latestTaskInstruction,
+    interactionMode,
     llmProvider,
     normalizedTemperature,
     selectedAnalysisFiles,
@@ -2518,6 +2568,7 @@ export function ThreePanelInterface() {
         setWorkspaceFiles([]);
         setSelectedAnalysisFiles(new Set());
         fileSelectionInitializedRef.current = false;
+        discardPendingContinuation();
         await loadWorkspaceTree();
         await loadWorkspaceFiles();
         toast({
@@ -3033,6 +3084,7 @@ export function ThreePanelInterface() {
       setUploadMsg("");
       setSelectedAnalysisFiles(new Set(files.map((file) => file.path)));
       fileSelectionInitializedRef.current = true;
+      discardPendingContinuation();
       setInputValue(selection.question.prompt[uiLanguage]);
       setSelectedWorkspacePath(files[0].path);
       await Promise.all([loadWorkspaceFiles(), loadWorkspaceTree()]);
@@ -5280,6 +5332,7 @@ export function ThreePanelInterface() {
       await handleStopMessage();
       return;
     }
+    const resumePending = manualPaused;
     const trimmedCustomModelName = customModelName.trim();
     if (llmProvider === "heywhale" && !heywhaleApiKey.trim()) {
       toastRef.current({
@@ -5302,19 +5355,35 @@ export function ThreePanelInterface() {
       });
       return;
     }
-    if (!inputValue.trim() && attachments.length === 0) return;
+    if (!resumePending && !inputValue.trim() && attachments.length === 0) return;
+    const additionalInstruction = resumePending ? inputValue.trim() : "";
+    const shouldAppendUserMessage = resumePending
+      ? !!additionalInstruction
+      : !!inputValue.trim() || attachments.length > 0;
     const baseMessageIndex = messages.length;
-    const aiMessageIndex = baseMessageIndex + 1;
+    const aiMessageIndex = baseMessageIndex + (shouldAppendUserMessage ? 1 : 0);
 
-    const newMessage: Message = {
-      id: Date.now().toString(),
-      content: inputValue,
-      sender: "user",
-      timestamp: new Date(),
-      attachments: attachments.length > 0 ? [...attachments] : undefined,
-    };
+    const newMessage: Message | null = shouldAppendUserMessage
+      ? {
+          id: resumePending
+            ? `manual-instruction-${Date.now()}`
+            : Date.now().toString(),
+          content: inputValue,
+          sender: "user",
+          timestamp: new Date(),
+          attachments:
+            !resumePending && attachments.length > 0
+              ? [...attachments]
+              : undefined,
+        }
+      : null;
+    const sessionMessagesForRequest = newMessage
+      ? [...messages, newMessage]
+      : messages;
 
-    setMessages((prev) => [...prev, newMessage]);
+    if (newMessage) {
+      setMessages((prev) => [...prev, newMessage]);
+    }
     setInputValue("");
     setAttachments([]);
     updateTypingState(true);
@@ -5348,7 +5417,10 @@ export function ThreePanelInterface() {
           system_prompt: systemPrompt.trim(),
           workspace: Array.from(selectedAnalysisFiles),
           assistant_message_id: aiMsgId,
-          session_messages: [...messages, newMessage]
+          interaction_mode: interactionMode,
+          resume_pending: resumePending,
+          additional_instruction: additionalInstruction,
+          session_messages: sessionMessagesForRequest
             .filter((message) => !message.localOnly)
             .map((message) => ({
               id: message.id,
@@ -5357,26 +5429,28 @@ export function ThreePanelInterface() {
               timestamp: message.timestamp,
               attachments: message.attachments || [],
             })),
-          messages: [
-            ...(effectiveSystemPrompt
-              ? [
-                  {
-                    role: "system",
-                    content: effectiveSystemPrompt,
-                  },
-                ]
-              : []),
-            ...messages
-              .filter((m) => !m.localOnly)
-              .map((msg) => ({
-                role: msg.sender === "user" ? "user" : "assistant",
-                content: msg.content,
-              })),
-            {
-              role: "user",
-              content: inputValue,
-            },
-          ],
+          messages: resumePending
+            ? []
+            : [
+                ...(effectiveSystemPrompt
+                  ? [
+                      {
+                        role: "system",
+                        content: effectiveSystemPrompt,
+                      },
+                    ]
+                  : []),
+                ...messages
+                  .filter((m) => !m.localOnly)
+                  .map((msg) => ({
+                    role: msg.sender === "user" ? "user" : "assistant",
+                    content: msg.content,
+                  })),
+                {
+                  role: "user",
+                  content: inputValue,
+                },
+              ],
           stream: true,
           session_id: sessionId,
         }),
@@ -5467,6 +5541,7 @@ export function ThreePanelInterface() {
         });
 
       let buffer = "";
+      let nextInteractionStatus: "idle" | "awaiting_user" = "idle";
 
       while (true) {
         const { done, value } = await reader.read();
@@ -5485,6 +5560,13 @@ export function ThreePanelInterface() {
           try {
             const json = JSON.parse(trimmed);
             const deltaContent = json.choices?.[0]?.delta?.content;
+            const interactionStatus = json.deepanalyze?.interaction_status;
+            if (
+              interactionStatus === "idle" ||
+              interactionStatus === "awaiting_user"
+            ) {
+              nextInteractionStatus = interactionStatus;
+            }
 
             if (deltaContent) {
               accumulatedMessage += deltaContent;
@@ -5501,6 +5583,13 @@ export function ThreePanelInterface() {
         try {
           const json = JSON.parse(buffer.trim());
           const deltaContent = json.choices?.[0]?.delta?.content;
+          const interactionStatus = json.deepanalyze?.interaction_status;
+          if (
+            interactionStatus === "idle" ||
+            interactionStatus === "awaiting_user"
+          ) {
+            nextInteractionStatus = interactionStatus;
+          }
           if (deltaContent) {
             accumulatedMessage += deltaContent;
             flushAiMessage(accumulatedMessage);
@@ -5512,6 +5601,7 @@ export function ThreePanelInterface() {
       // 确保缓存中的最后一段内容也写入消息状态。
       flushAiMessage(accumulatedMessage);
       autoCollapseForContent(accumulatedMessage, aiMessageIndex);
+      setManualPaused(nextInteractionStatus === "awaiting_user");
 
       // 结束后刷新一次文件列表确保无遗漏
       await loadWorkspaceFiles();
@@ -5548,6 +5638,20 @@ export function ThreePanelInterface() {
             },
           ];
         });
+        if (interactionMode === "manual" && sessionId) {
+          void fetch(
+            `${API_URLS.SESSION_STATE}?session_id=${encodeURIComponent(sessionId)}`
+          )
+            .then((response) => (response.ok ? response.json() : null))
+            .then((state) => {
+              if (state) {
+                setManualPaused(
+                  isAwaitingManualContinuation(state.interaction_state)
+                );
+              }
+            })
+            .catch(() => undefined);
+        }
       }
       updateTypingState(false);
       setStreamingMessageId(null);
@@ -5576,6 +5680,56 @@ export function ThreePanelInterface() {
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
   };
+
+  const composerPlaceholder = manualPaused
+    ? uiLanguage === "zh"
+      ? "可选：为下一轮分析追加指令"
+      : "Optional: add instructions for the next analysis round"
+    : uiLanguage === "zh"
+      ? "输入分析问题，或从左侧加载示例..."
+      : "Enter an analysis question, or load a sample from the left...";
+
+  const renderInteractionModeControl = () => (
+    <div className="mb-2 flex min-w-0 items-center justify-between gap-3">
+      <Tabs
+        value={interactionMode}
+        onValueChange={(value) =>
+          setInteractionMode(normalizeInteractionMode(value))
+        }
+        className="gap-0"
+      >
+        <TabsList className="h-8 rounded-md bg-gray-100 p-0.5 dark:bg-gray-900">
+          <TabsTrigger
+            value="auto"
+            disabled={isTyping}
+            className="h-7 rounded px-2 text-xs"
+          >
+            <Sparkles className="h-3.5 w-3.5" />
+            {uiLanguage === "zh" ? "自动" : "Auto"}
+          </TabsTrigger>
+          <TabsTrigger
+            value="manual"
+            disabled={isTyping}
+            className="h-7 rounded px-2 text-xs"
+          >
+            <Hand className="h-3.5 w-3.5" />
+            {uiLanguage === "zh" ? "手动" : "Manual"}
+          </TabsTrigger>
+        </TabsList>
+      </Tabs>
+      {manualPaused && (
+        <Badge
+          variant="outline"
+          className="min-w-0 rounded-full border-amber-300 bg-amber-50 px-2 py-1 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200"
+        >
+          <CirclePause className="mr-1 h-3.5 w-3.5 shrink-0" />
+          <span className="truncate">
+            {uiLanguage === "zh" ? "等待继续" : "Waiting to continue"}
+          </span>
+        </Badge>
+      )}
+    </div>
+  );
 
   const renderClearChatButton = (buttonClassName: string) => (
     <AlertDialog>
@@ -5621,16 +5775,13 @@ export function ThreePanelInterface() {
     const stacked = !!options?.stacked;
     return (
       <div className={wrapperClassName}>
+        {renderInteractionModeControl()}
         <div className={stacked ? "space-y-3" : "flex gap-3 items-end"}>
           {stacked ? (
             <Textarea
               value={inputValue}
               onChange={(e) => setInputValue(e.target.value)}
-              placeholder={
-                uiLanguage === "zh"
-                  ? "输入分析问题，或从左侧加载示例..."
-                  : "Enter an analysis question, or load a sample from the left..."
-              }
+              placeholder={composerPlaceholder}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
@@ -5654,11 +5805,7 @@ export function ThreePanelInterface() {
                 <Textarea
                   value={inputValue}
                   onChange={(e) => setInputValue(e.target.value)}
-                  placeholder={
-                    uiLanguage === "zh"
-                      ? "输入分析问题，或从左侧加载示例..."
-                      : "Enter an analysis question, or load a sample from the left..."
-                  }
+                  placeholder={composerPlaceholder}
                   onKeyDown={(e) => {
                     if (e.key === "Enter" && !e.shiftKey) {
                       e.preventDefault();
@@ -5705,11 +5852,25 @@ export function ThreePanelInterface() {
                 <Button
                   onClick={handleSendMessage}
                   size="sm"
-                  disabled={!inputValue.trim() && attachments.length === 0}
+                  disabled={
+                    !manualPaused &&
+                    !inputValue.trim() &&
+                    attachments.length === 0
+                  }
                   className="h-10 rounded-full bg-black px-4 text-white dark:bg-white dark:text-black hover:bg-gray-800 dark:hover:bg-gray-200"
                 >
-                  <Send className="h-4 w-4 mr-1" />
-                  {uiLanguage === "zh" ? "\u53d1\u9001" : "Send"}
+                  {manualPaused ? (
+                    <Play className="h-4 w-4 mr-1" />
+                  ) : (
+                    <Send className="h-4 w-4 mr-1" />
+                  )}
+                  {manualPaused
+                    ? uiLanguage === "zh"
+                      ? "继续分析"
+                      : "Continue"
+                    : uiLanguage === "zh"
+                      ? "发送"
+                      : "Send"}
                 </Button>
               )}
               {renderClearChatButton("h-10 rounded-full px-3")}
@@ -6421,6 +6582,7 @@ export function ThreePanelInterface() {
               {/* Input Area */}
               {!moveDialogToLeftPanel && (
               <div className="p-4 border-t border-gray-200 dark:border-gray-800 shrink-0 bg-white/80 dark:bg-gray-950/80">
+                {renderInteractionModeControl()}
                 <div className="flex gap-3 items-end">
                   <Button
                     variant="ghost"
@@ -6435,11 +6597,7 @@ export function ThreePanelInterface() {
                     <Textarea
                       value={inputValue}
                       onChange={(e) => setInputValue(e.target.value)}
-                      placeholder={
-                        uiLanguage === "zh"
-                          ? "输入分析问题，或从左侧加载示例..."
-                          : "Enter an analysis question, or load a sample from the left..."
-                      }
+                      placeholder={composerPlaceholder}
                       onKeyDown={(e) => {
                         if (e.key === "Enter" && !e.shiftKey) {
                           e.preventDefault();
@@ -6469,11 +6627,25 @@ export function ThreePanelInterface() {
                       <Button
                         onClick={handleSendMessage}
                         size="sm"
-                        disabled={!inputValue.trim() && attachments.length === 0}
+                        disabled={
+                          !manualPaused &&
+                          !inputValue.trim() &&
+                          attachments.length === 0
+                        }
                         className="h-10 rounded-full bg-black px-4 text-white dark:bg-white dark:text-black hover:bg-gray-800 dark:hover:bg-gray-200"
                       >
-                        <Send className="h-4 w-4 mr-1" />
-                        {uiLanguage === "zh" ? "发送" : "Send"}
+                        {manualPaused ? (
+                          <Play className="h-4 w-4 mr-1" />
+                        ) : (
+                          <Send className="h-4 w-4 mr-1" />
+                        )}
+                        {manualPaused
+                          ? uiLanguage === "zh"
+                            ? "继续分析"
+                            : "Continue"
+                          : uiLanguage === "zh"
+                            ? "发送"
+                            : "Send"}
                       </Button>
                     )}
                     {renderClearChatButton("h-10 rounded-full px-3")}

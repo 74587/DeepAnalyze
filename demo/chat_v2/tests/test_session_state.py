@@ -101,6 +101,37 @@ class SessionStateTest(unittest.TestCase):
         )
         self.assertEqual(migrated["task_config"]["system_prompt"], "Use concise Chinese")
 
+    def test_persists_manual_mode_and_exposes_only_public_pause_state(self):
+        configured = session_state.update_task_config(
+            "session-manual",
+            {"interaction_mode": "manual"},
+        )
+        self.assertEqual(configured["task_config"]["interaction_mode"], "manual")
+
+        session_state.save_pending_continuation(
+            "session-manual",
+            {
+                "conversation": [
+                    {"role": "user", "content": "analyze"},
+                    {"role": "assistant", "content": "<Code>print(1)</Code>"},
+                ],
+                "execution_output": "1",
+                "round_count": 1,
+                "code_execution_count": 1,
+                "elapsed_seconds": 0.5,
+            },
+        )
+        public_state = session_state.load_public_session_state("session-manual")
+        self.assertNotIn("pending_continuation", public_state)
+        self.assertEqual(
+            public_state["interaction_state"]["status"],
+            "awaiting_user",
+        )
+
+        session_state.clear_pending_continuation("session-manual")
+        public_state = session_state.load_public_session_state("session-manual")
+        self.assertEqual(public_state["interaction_state"]["status"], "idle")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -19,6 +19,9 @@ from ..services.chat import (
 from ..services.execution_service import execute_managed_code
 from ..services.docker_executor import release_session_container
 from ..services.session_state import (
+    clear_pending_continuation,
+    load_pending_continuation,
+    load_session_state,
     replace_messages,
     update_task_config,
     upsert_message,
@@ -98,14 +101,26 @@ async def chat(body: dict = Body(...)):
         runtime_config = build_chat_runtime_config(body)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    interaction_mode = "manual" if body.get("interaction_mode") == "manual" else "auto"
+    resume_pending = body.get("resume_pending") is True
+    pending_continuation = load_pending_continuation(session_id) if resume_pending else None
+    if resume_pending and pending_continuation is None:
+        raise HTTPException(status_code=409, detail="No paused analysis is available")
+    if not resume_pending:
+        clear_pending_continuation(session_id)
 
-    latest_instruction = next(
-        (
-            str(message.get("content") or "")
-            for message in reversed(session_messages)
-            if message.get("role") == "user"
-        ),
-        "",
+    existing_task = load_session_state(session_id).get("task_config") or {}
+    latest_instruction = (
+        str(existing_task.get("instruction") or "")
+        if resume_pending
+        else next(
+            (
+                str(message.get("content") or "")
+                for message in reversed(session_messages)
+                if message.get("role") == "user"
+            ),
+            "",
+        )
     )
     state = update_task_config(
         session_id,
@@ -117,6 +132,7 @@ async def chat(body: dict = Body(...)):
             "temperature": runtime_config.temperature,
             "system_prompt": str(body.get("system_prompt") or ""),
             "ui_language": body.get("ui_language", ""),
+            "interaction_mode": interaction_mode,
         },
     )
     workspace = (
@@ -132,7 +148,15 @@ async def chat(body: dict = Body(...)):
     def generate():
         assistant_parts: list[str] = []
         try:
-            for delta_content in bot_stream(messages, workspace, session_id, runtime_config):
+            for delta_content in bot_stream(
+                messages,
+                workspace,
+                session_id,
+                runtime_config,
+                interaction_mode=interaction_mode,
+                resume_state=pending_continuation,
+                additional_instruction=str(body.get("additional_instruction") or ""),
+            ):
                 assistant_parts.append(delta_content)
                 chunk = {
                     "id": "chatcmpl-stream",
@@ -169,6 +193,14 @@ async def chat(body: dict = Body(...)):
             "created": 1677652288,
             "model": runtime_config.model or settings.model_path,
             "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+            "deepanalyze": {
+                "interaction_status": (
+                    "awaiting_user"
+                    if load_pending_continuation(session_id) is not None
+                    else "idle"
+                ),
+                "interaction_mode": interaction_mode,
+            },
         }
         yield json.dumps(end_chunk) + "\n"
 

@@ -18,6 +18,7 @@ import openai
 from .execution import build_file_block
 from .execution_service import execute_managed_code
 from .docker_executor import ensure_execution_backend_ready, release_session_container
+from .session_state import clear_pending_continuation, save_pending_continuation
 from .action_protocol import (
     ProtocolValidationError,
     find_completed_action_end,
@@ -51,6 +52,7 @@ HEYWHALE_BACKUP_CHAT_COMPLETIONS_URL = (
 )
 HEYWHALE_STOP_SEQUENCES = ["</Code>", "</Answer>"]
 EXECUTE_RESULT_PREFIX = "# Execute Result\n"
+ADDITIONAL_INSTRUCTION_HEADING = "# Additional Instruction"
 FIXED_MODEL_NAME = "DeepAnalyze-8B"
 _FENCE_WITH_INFO_RE = re.compile(r"```[ \t]*[\w.+-]*[ \t]*\r?\n(.*?)```", re.DOTALL)
 _FENCE_INLINE_RE = re.compile(r"```(?:python)?(.*?)```", re.DOTALL | re.IGNORECASE)
@@ -90,6 +92,21 @@ def _build_execution_feedback_message(
             "content": f"{EXECUTE_RESULT_PREFIX}{execution_output}",
         }
     return {"role": "execute", "content": execution_output}
+
+
+def _append_additional_instruction(
+    execution_output: str,
+    instruction: str,
+) -> str:
+    normalized_instruction = str(instruction or "").strip()
+    if not normalized_instruction:
+        return execution_output
+    normalized_output = str(execution_output or "").rstrip()
+    separator = "\n\n" if normalized_output else ""
+    return (
+        f"{normalized_output}{separator}{ADDITIONAL_INSTRUCTION_HEADING}\n"
+        f"{normalized_instruction}"
+    )
 
 
 def _get_or_create_stop_event(session_id: str) -> threading.Event:
@@ -648,8 +665,13 @@ def bot_stream(
     workspace: list[str] | None,
     session_id: str = "default",
     runtime_config: ChatRuntimeConfig | None = None,
+    *,
+    interaction_mode: str = "auto",
+    resume_state: dict[str, Any] | None = None,
+    additional_instruction: str = "",
 ):
     runtime_config = runtime_config or ChatRuntimeConfig()
+    interaction_mode = "manual" if interaction_mode == "manual" else "auto"
     session_id = validate_session_id(session_id)
     session_lock = try_acquire_session_run(session_id)
     if session_lock is None:
@@ -658,10 +680,6 @@ def bot_stream(
 
     stop_event = begin_session_run_stop_event(session_id)
     try:
-        conversation = deepcopy(messages or [])
-        is_initial_conversation = not any(
-            message.get("role") == "assistant" for message in conversation
-        )
         workspace_paths = list(workspace or [])
         workspace_dir = get_session_workspace(session_id)
         Path(workspace_dir, "generated").mkdir(parents=True, exist_ok=True)
@@ -671,23 +689,63 @@ def bot_stream(
                 args=(session_id, stop_event),
                 daemon=True,
             ).start()
+        if resume_state is not None:
+            conversation = deepcopy(resume_state.get("conversation") or [])
+            if not conversation:
+                yield _execution_status_block(
+                    "Continuation Error",
+                    "the paused analysis context is unavailable",
+                )
+                return
+            execution_feedback = _append_additional_instruction(
+                str(resume_state.get("execution_output") or ""),
+                additional_instruction,
+            )
+            conversation.append(
+                _build_execution_feedback_message(runtime_config, execution_feedback)
+            )
+            is_initial_conversation = False
+            round_count = max(0, int(resume_state.get("round_count") or 0))
+            code_execution_count = max(
+                0,
+                int(resume_state.get("code_execution_count") or 0),
+            )
+            elapsed_seconds = max(
+                0.0,
+                float(resume_state.get("elapsed_seconds") or 0.0),
+            )
+            started_at = time.monotonic() - min(
+                elapsed_seconds,
+                float(settings.chat_max_duration_sec),
+            )
+            clear_pending_continuation(session_id)
+            logger.info(
+                "manual_analysis_resumed session_id=%s additional_instruction=%s mode=%s",
+                session_id,
+                bool(str(additional_instruction or "").strip()),
+                interaction_mode,
+            )
+        else:
+            conversation = deepcopy(messages or [])
+            is_initial_conversation = not any(
+                message.get("role") == "assistant" for message in conversation
+            )
+            if conversation and conversation[0].get("role") == "assistant":
+                conversation = conversation[1:]
 
-        if conversation and conversation[0].get("role") == "assistant":
-            conversation = conversation[1:]
-
-        _build_user_prompt(
-            conversation,
-            workspace_paths,
-            workspace_dir,
-            use_all_files_when_empty=workspace is None,
-        )
+            _build_user_prompt(
+                conversation,
+                workspace_paths,
+                workspace_dir,
+                use_all_files_when_empty=workspace is None,
+            )
+            round_count = 0
+            code_execution_count = 0
+            started_at = time.monotonic()
         initial_workspace = {
             path.resolve() for path in Path(workspace_dir).rglob("*") if path.is_file()
         }
         finished = False
-        round_count = 0
-        code_execution_count = 0
-        started_at = time.monotonic()
         while not finished:
             if stop_event.is_set():
                 break
@@ -860,7 +918,27 @@ def bot_stream(
                 timeout_sec=min(settings.execution_timeout_sec, remaining_seconds),
                 cancel_event=stop_event,
             )
+            if interaction_mode == "manual":
+                save_pending_continuation(
+                    session_id,
+                    {
+                        "conversation": conversation,
+                        "execution_output": outcome.result,
+                        "round_count": round_count,
+                        "code_execution_count": code_execution_count,
+                        "elapsed_seconds": time.monotonic() - started_at,
+                    },
+                )
+                logger.info(
+                    "manual_analysis_paused session_id=%s round=%s executions=%s",
+                    session_id,
+                    round_count,
+                    code_execution_count,
+                )
             yield outcome.execution_content
+
+            if interaction_mode == "manual":
+                return
 
             conversation.append(
                 _build_execution_feedback_message(runtime_config, outcome.result)

@@ -16,7 +16,7 @@ from .workspace import (
 
 
 STATE_FILENAME = "session.json"
-STATE_SCHEMA_VERSION = 1
+STATE_SCHEMA_VERSION = 2
 MAX_STORED_MESSAGES = 1000
 MAX_STORED_EXECUTIONS = 200
 _STATE_LOCKS: dict[str, threading.RLock] = {}
@@ -52,6 +52,7 @@ def _empty_state(session_id: str) -> dict[str, Any]:
         "task_config": {},
         "messages": [],
         "executions": [],
+        "pending_continuation": None,
         "created_at": now,
         "updated_at": now,
     }
@@ -75,7 +76,23 @@ def load_session_state(session_id: str) -> dict[str, Any]:
         baseline["messages"] = list(baseline.get("messages") or [])
         baseline["executions"] = list(baseline.get("executions") or [])
         baseline["task_config"] = dict(baseline.get("task_config") or {})
+        pending_continuation = baseline.get("pending_continuation")
+        baseline["pending_continuation"] = (
+            dict(pending_continuation)
+            if isinstance(pending_continuation, dict)
+            else None
+        )
         return baseline
+
+
+def load_public_session_state(session_id: str) -> dict[str, Any]:
+    state = load_session_state(session_id)
+    pending = state.pop("pending_continuation", None)
+    state["interaction_state"] = {
+        "status": "awaiting_user" if pending else "idle",
+        "paused_at": str((pending or {}).get("paused_at") or ""),
+    }
+    return state
 
 
 def _save_session_state(session_id: str, state: dict[str, Any]) -> dict[str, Any]:
@@ -192,6 +209,9 @@ def update_task_config(
 ) -> dict[str, Any]:
     sid = validate_session_id(session_id)
     selected_files = validate_selected_files(sid, task_config.get("selected_files") or [])
+    interaction_mode = str(task_config.get("interaction_mode") or "auto").lower()
+    if interaction_mode not in {"auto", "manual"}:
+        interaction_mode = "auto"
     normalized = {
         "instruction": str(task_config.get("instruction") or ""),
         "selected_files": selected_files,
@@ -204,11 +224,59 @@ def update_task_config(
             or ""
         ),
         "ui_language": str(task_config.get("ui_language") or ""),
+        "interaction_mode": interaction_mode,
         "updated_at": _utc_now(),
     }
     with _state_lock(sid):
         state = load_session_state(sid)
         state["task_config"] = normalized
+        return _save_session_state(sid, state)
+
+
+def save_pending_continuation(
+    session_id: str,
+    continuation: dict[str, Any],
+) -> dict[str, Any]:
+    sid = validate_session_id(session_id)
+    conversation = [
+        {
+            "role": str(message.get("role") or ""),
+            "content": str(message.get("content") or ""),
+        }
+        for message in continuation.get("conversation") or []
+        if isinstance(message, dict)
+        and str(message.get("role") or "") in {"system", "user", "assistant", "execute"}
+    ]
+    pending = {
+        "conversation": conversation,
+        "execution_output": str(continuation.get("execution_output") or ""),
+        "round_count": max(0, int(continuation.get("round_count") or 0)),
+        "code_execution_count": max(
+            0,
+            int(continuation.get("code_execution_count") or 0),
+        ),
+        "elapsed_seconds": max(
+            0.0,
+            float(continuation.get("elapsed_seconds") or 0.0),
+        ),
+        "paused_at": _utc_now(),
+    }
+    with _state_lock(sid):
+        state = load_session_state(sid)
+        state["pending_continuation"] = pending
+        return _save_session_state(sid, state)
+
+
+def load_pending_continuation(session_id: str) -> dict[str, Any] | None:
+    pending = load_session_state(session_id).get("pending_continuation")
+    return deepcopy(pending) if isinstance(pending, dict) else None
+
+
+def clear_pending_continuation(session_id: str) -> dict[str, Any]:
+    sid = validate_session_id(session_id)
+    with _state_lock(sid):
+        state = load_session_state(sid)
+        state["pending_continuation"] = None
         return _save_session_state(sid, state)
 
 

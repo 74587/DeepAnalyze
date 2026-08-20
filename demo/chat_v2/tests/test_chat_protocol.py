@@ -1,4 +1,5 @@
 import asyncio
+import json
 import tempfile
 import threading
 import time
@@ -101,6 +102,181 @@ class ChatProtocolIntegrationTest(unittest.TestCase):
             )
         )
         self.assertEqual(len(reports), 1)
+
+    def test_manual_mode_pauses_after_execute_before_model_feedback(self):
+        model_stream = Mock(
+            return_value=stream_text(
+                "<Analyze>plan</Analyze><Code>print('ok')</Code>"
+            )
+        )
+        with (
+            patch.object(chat, "_iter_local_stream", model_stream),
+            patch.object(
+                chat,
+                "execute_managed_code",
+                return_value=execution_outcome("observed output"),
+            ),
+        ):
+            output = "".join(
+                chat.bot_stream(
+                    [{"role": "user", "content": "analyze"}],
+                    [],
+                    "session-manual-pause",
+                    interaction_mode="manual",
+                )
+            )
+
+        self.assertIn("<Execute>", output)
+        self.assertEqual(model_stream.call_count, 1)
+        pending = session_state.load_pending_continuation("session-manual-pause")
+        self.assertIsNotNone(pending)
+        self.assertEqual(pending["execution_output"], "observed output")
+        self.assertEqual(pending["conversation"][-1]["role"], "assistant")
+        self.assertNotIn(
+            "execute",
+            [message["role"] for message in pending["conversation"]],
+        )
+
+    def test_manual_resume_appends_instruction_to_execute_feedback(self):
+        session_id = "session-manual-resume"
+        with (
+            patch.object(
+                chat,
+                "_iter_local_stream",
+                return_value=stream_text(
+                    "<Analyze>plan</Analyze><Code>print('ok')</Code>"
+                ),
+            ),
+            patch.object(
+                chat,
+                "execute_managed_code",
+                return_value=execution_outcome("observed output"),
+            ),
+        ):
+            list(
+                chat.bot_stream(
+                    [{"role": "user", "content": "analyze"}],
+                    [],
+                    session_id,
+                    interaction_mode="manual",
+                )
+            )
+
+        pending = session_state.load_pending_continuation(session_id)
+        captured_conversations = []
+
+        def answer_stream(conversation, *_args):
+            captured_conversations.append(conversation)
+            return stream_text("<Answer>done</Answer>")
+
+        with patch.object(chat, "_iter_local_stream", side_effect=answer_stream):
+            output = "".join(
+                chat.bot_stream(
+                    [],
+                    [],
+                    session_id,
+                    interaction_mode="manual",
+                    resume_state=pending,
+                    additional_instruction="Focus on the regional anomaly.",
+                )
+            )
+
+        self.assertIn("<Answer>done</Answer>", output)
+        feedback = captured_conversations[0][-1]
+        self.assertEqual(feedback["role"], "execute")
+        self.assertEqual(
+            feedback["content"],
+            "observed output\n\n# Additional Instruction\n"
+            "Focus on the regional anomaly.",
+        )
+        self.assertIsNone(session_state.load_pending_continuation(session_id))
+
+    def test_manual_resume_without_instruction_forwards_unchanged_execute_feedback(self):
+        session_id = "session-manual-resume-directly"
+        session_state.save_pending_continuation(
+            session_id,
+            {
+                "conversation": [
+                    {"role": "user", "content": "analyze"},
+                    {"role": "assistant", "content": "<Code>print('ok')</Code>"},
+                ],
+                "execution_output": "observed output",
+                "round_count": 1,
+                "code_execution_count": 1,
+                "elapsed_seconds": 0.1,
+            },
+        )
+        pending = session_state.load_pending_continuation(session_id)
+        captured_conversations = []
+
+        def answer_stream(conversation, *_args):
+            captured_conversations.append(conversation)
+            return stream_text("<Answer>done</Answer>")
+
+        with patch.object(chat, "_iter_local_stream", side_effect=answer_stream):
+            output = "".join(
+                chat.bot_stream(
+                    [],
+                    [],
+                    session_id,
+                    interaction_mode="manual",
+                    resume_state=pending,
+                )
+            )
+
+        self.assertIn("<Answer>done</Answer>", output)
+        self.assertEqual(
+            captured_conversations[0][-1],
+            {"role": "execute", "content": "observed output"},
+        )
+        self.assertIsNone(session_state.load_pending_continuation(session_id))
+
+    def test_stream_end_chunk_reports_manual_pause_state(self):
+        session_id = "session-manual-stream-status"
+
+        def paused_stream(*_args, **_kwargs):
+            session_state.save_pending_continuation(
+                session_id,
+                {
+                    "conversation": [
+                        {"role": "user", "content": "analyze"},
+                        {"role": "assistant", "content": "<Code>print(1)</Code>"},
+                    ],
+                    "execution_output": "1",
+                    "round_count": 1,
+                    "code_execution_count": 1,
+                    "elapsed_seconds": 0.1,
+                },
+            )
+            yield "<Execute>1</Execute>"
+
+        async def consume(response):
+            chunks = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
+            return "".join(chunks)
+
+        with patch.object(chat_router, "bot_stream", side_effect=paused_stream):
+            response = asyncio.run(
+                chat_router.chat(
+                    {
+                        "messages": [{"role": "user", "content": "analyze"}],
+                        "session_messages": [
+                            {"id": "user-1", "role": "user", "content": "analyze"}
+                        ],
+                        "workspace": [],
+                        "session_id": session_id,
+                        "interaction_mode": "manual",
+                    }
+                )
+            )
+            body = asyncio.run(consume(response))
+
+        end_chunk = json.loads(body.strip().splitlines()[-1])
+        self.assertEqual(
+            end_chunk["deepanalyze"]["interaction_status"],
+            "awaiting_user",
+        )
 
     def test_forwards_tagged_model_deltas_without_repacking_the_whole_round(self):
         model_deltas = iter(
