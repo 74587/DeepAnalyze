@@ -95,7 +95,7 @@ import {
   Send,
   Sparkles,
   User,
-  Paperclip,
+  Plus,
   X,
   FileText,
   ImageIcon,
@@ -800,6 +800,51 @@ const StreamingSectionViewport = memo(function StreamingSectionViewport({
     </div>
   );
 });
+
+const COMPOSER_MIN_HEIGHT_PX = 40;
+const COMPOSER_MAX_HEIGHT_PX = 160;
+
+function AutoGrowingTextarea({
+  onChange,
+  value,
+  ...props
+}: Omit<React.ComponentProps<typeof Textarea>, "ref">) {
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const resizeTextarea = useCallback((textarea: HTMLTextAreaElement) => {
+    if (!textarea.value) {
+      textarea.style.height = `${COMPOSER_MIN_HEIGHT_PX}px`;
+      textarea.style.overflowY = "hidden";
+      return;
+    }
+
+    textarea.style.height = "0px";
+    const nextHeight = Math.min(
+      Math.max(textarea.scrollHeight, COMPOSER_MIN_HEIGHT_PX),
+      COMPOSER_MAX_HEIGHT_PX
+    );
+    textarea.style.height = `${nextHeight}px`;
+    textarea.style.overflowY =
+      textarea.scrollHeight > COMPOSER_MAX_HEIGHT_PX ? "auto" : "hidden";
+  }, []);
+
+  useEffect(() => {
+    if (textareaRef.current) resizeTextarea(textareaRef.current);
+  }, [resizeTextarea, value]);
+
+  return (
+    <Textarea
+      {...props}
+      ref={textareaRef}
+      rows={1}
+      value={value}
+      onChange={(event) => {
+        resizeTextarea(event.currentTarget);
+        onChange?.(event);
+      }}
+    />
+  );
+}
 
 export function ThreePanelInterface() {
   const { toast } = useToast();
@@ -5689,9 +5734,19 @@ export function ThreePanelInterface() {
     : uiLanguage === "zh"
       ? "输入分析问题，或从左侧加载示例..."
       : "Enter an analysis question, or load a sample from the left...";
+  const compactComposerPlaceholder = manualPaused
+    ? uiLanguage === "zh"
+      ? "追加指令（可选）"
+      : "Add instructions (optional)"
+    : uiLanguage === "zh"
+      ? "输入分析问题..."
+      : "Enter a question...";
 
   const renderInteractionModeControl = () => (
-    <div className="mb-2 flex min-w-0 items-center justify-between gap-3">
+    <div
+      className="mb-2 flex min-w-0 flex-wrap items-center gap-2"
+      data-testid="interaction-mode-control"
+    >
       <Tabs
         value={interactionMode}
         onValueChange={(value) =>
@@ -5769,6 +5824,38 @@ export function ThreePanelInterface() {
     </AlertDialog>
   );
 
+  const renderComposerInput = (placeholder: string) => (
+    <div
+      className="flex min-w-0 flex-1 items-end overflow-hidden rounded-2xl border border-gray-200 bg-white transition-colors focus-within:border-gray-400 dark:border-gray-800 dark:bg-black dark:focus-within:border-gray-600"
+      data-testid="chat-composer-input"
+    >
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={() => fileInputRef.current?.click()}
+        className="h-10 w-10 shrink-0 rounded-full p-0 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+        title={uiLanguage === "zh" ? "上传文件" : "Upload Files"}
+        aria-label={uiLanguage === "zh" ? "上传文件" : "Upload Files"}
+        data-testid="chat-composer-upload"
+      >
+        <Plus className="h-4 w-4" />
+      </Button>
+      <AutoGrowingTextarea
+        value={inputValue}
+        onChange={(e) => setInputValue(e.target.value)}
+        placeholder={placeholder}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            handleSendMessage();
+          }
+        }}
+        className="max-h-40 min-h-10 flex-1 resize-none rounded-none border-0 bg-transparent px-0 py-2.5 pr-3 shadow-none [field-sizing:fixed] focus-visible:border-0 focus-visible:ring-0"
+        data-testid="chat-composer-textarea"
+      />
+    </div>
+  );
+
   const renderChatComposer = (
     wrapperClassName: string,
     options?: { stacked?: boolean }
@@ -5777,105 +5864,59 @@ export function ThreePanelInterface() {
     return (
       <div className={wrapperClassName}>
         {renderInteractionModeControl()}
-        <div className={stacked ? "space-y-3" : "flex gap-3 items-end"}>
-          {stacked ? (
-            <Textarea
-              value={inputValue}
-              onChange={(e) => setInputValue(e.target.value)}
-              placeholder={composerPlaceholder}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  handleSendMessage();
-                }
-              }}
-              className="min-h-24 rounded-2xl border-gray-200 dark:border-gray-800 bg-white dark:bg-black pr-4"
-            />
-          ) : (
-            <>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => fileInputRef.current?.click()}
-                className="h-10 w-10 p-0 rounded-full text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
-                title={uiLanguage === "zh" ? "\u4e0a\u4f20\u6587\u4ef6" : "Upload Files"}
-              >
-                <Paperclip className="h-4 w-4" />
-              </Button>
-              <div className="flex-1 relative">
-                <Textarea
-                  value={inputValue}
-                  onChange={(e) => setInputValue(e.target.value)}
-                  placeholder={composerPlaceholder}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey) {
-                      e.preventDefault();
-                      handleSendMessage();
-                    }
-                  }}
-                  className="min-h-24 rounded-2xl border-gray-200 dark:border-gray-800 bg-white dark:bg-black pr-4"
-                />
-              </div>
-            </>
+        <div className={stacked ? "space-y-2" : "flex items-end gap-2"}>
+          {renderComposerInput(
+            stacked ? compactComposerPlaceholder : composerPlaceholder
           )}
 
-          <div className={stacked ? "flex items-center justify-between gap-3" : "flex items-center gap-2"}>
-            {stacked && (
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => fileInputRef.current?.click()}
-                  className="h-10 w-10 p-0 rounded-full text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
-                  title={uiLanguage === "zh" ? "\u4e0a\u4f20\u6587\u4ef6" : "Upload Files"}
-                >
-                  <Paperclip className="h-4 w-4" />
-                </Button>
-              </div>
+          <div
+            className={
+              stacked
+                ? "flex items-center justify-end gap-2"
+                : "flex items-center gap-2"
+            }
+          >
+            {isTyping ? (
+              <Button
+                onClick={handleStopMessage}
+                size="sm"
+                className="h-10 rounded-full px-4 bg-red-600 text-white hover:bg-red-700 dark:bg-red-600 dark:text-white dark:hover:bg-red-700"
+                title={uiLanguage === "zh" ? "\u6b63\u5728\u751f\u6210" : "Generating"}
+                disabled={isStopping}
+              >
+                {isStopping ? (
+                  <RefreshCw className="h-4 w-4 mr-1 animate-spin" />
+                ) : (
+                  <Square className="h-3.5 w-3.5 mr-1 fill-current" />
+                )}
+                {uiLanguage === "zh" ? "\u505c\u6b62" : "Stop"}
+              </Button>
+            ) : (
+              <Button
+                onClick={handleSendMessage}
+                size="sm"
+                disabled={
+                  !manualPaused &&
+                  !inputValue.trim() &&
+                  attachments.length === 0
+                }
+                className="h-10 rounded-full bg-black px-4 text-white dark:bg-white dark:text-black hover:bg-gray-800 dark:hover:bg-gray-200"
+              >
+                {manualPaused ? (
+                  <Play className="h-4 w-4 mr-1" />
+                ) : (
+                  <Send className="h-4 w-4 mr-1" />
+                )}
+                {manualPaused
+                  ? uiLanguage === "zh"
+                    ? "继续分析"
+                    : "Continue"
+                  : uiLanguage === "zh"
+                    ? "发送"
+                    : "Send"}
+              </Button>
             )}
-            <div className="flex items-center gap-2">
-              {isTyping ? (
-                <Button
-                  onClick={handleStopMessage}
-                  size="sm"
-                  className="h-10 rounded-full px-4 bg-red-600 text-white hover:bg-red-700 dark:bg-red-600 dark:text-white dark:hover:bg-red-700"
-                  title={uiLanguage === "zh" ? "\u6b63\u5728\u751f\u6210" : "Generating"}
-                  disabled={isStopping}
-                >
-                  {isStopping ? (
-                    <RefreshCw className="h-4 w-4 mr-1 animate-spin" />
-                  ) : (
-                    <Square className="h-3.5 w-3.5 mr-1 fill-current" />
-                  )}
-                  {uiLanguage === "zh" ? "\u505c\u6b62" : "Stop"}
-                </Button>
-              ) : (
-                <Button
-                  onClick={handleSendMessage}
-                  size="sm"
-                  disabled={
-                    !manualPaused &&
-                    !inputValue.trim() &&
-                    attachments.length === 0
-                  }
-                  className="h-10 rounded-full bg-black px-4 text-white dark:bg-white dark:text-black hover:bg-gray-800 dark:hover:bg-gray-200"
-                >
-                  {manualPaused ? (
-                    <Play className="h-4 w-4 mr-1" />
-                  ) : (
-                    <Send className="h-4 w-4 mr-1" />
-                  )}
-                  {manualPaused
-                    ? uiLanguage === "zh"
-                      ? "继续分析"
-                      : "Continue"
-                    : uiLanguage === "zh"
-                      ? "发送"
-                      : "Send"}
-                </Button>
-              )}
-              {renderClearChatButton("h-10 rounded-full px-3")}
-            </div>
+            {renderClearChatButton("h-10 rounded-full px-3")}
           </div>
         </div>
       </div>
@@ -6582,77 +6623,9 @@ export function ThreePanelInterface() {
 
               {/* Input Area */}
               {!moveDialogToLeftPanel && (
-              <div className="p-4 border-t border-gray-200 dark:border-gray-800 shrink-0 bg-white/80 dark:bg-gray-950/80">
-                {renderInteractionModeControl()}
-                <div className="flex gap-3 items-end">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => fileInputRef.current?.click()}
-                    className="h-10 w-10 p-0 rounded-full text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
-                    title={uiLanguage === "zh" ? "上传文件" : "Upload Files"}
-                  >
-                    <Paperclip className="h-4 w-4" />
-                  </Button>
-                  <div className="flex-1 relative">
-                    <Textarea
-                      value={inputValue}
-                      onChange={(e) => setInputValue(e.target.value)}
-                      placeholder={composerPlaceholder}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" && !e.shiftKey) {
-                          e.preventDefault();
-                          handleSendMessage();
-                        }
-                      }}
-                      className="min-h-24 rounded-2xl border-gray-200 dark:border-gray-800 bg-white dark:bg-black pr-4"
-                    />
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {isTyping ? (
-                      <Button
-                        onClick={handleStopMessage}
-                        size="sm"
-                        className="h-10 rounded-full px-4 bg-red-600 text-white hover:bg-red-700 dark:bg-red-600 dark:text-white dark:hover:bg-red-700"
-                        title={uiLanguage === "zh" ? "正在生成" : "Generating"}
-                        disabled={isStopping}
-                      >
-                        {isStopping ? (
-                          <RefreshCw className="h-4 w-4 mr-1 animate-spin" />
-                        ) : (
-                          <Square className="h-3.5 w-3.5 mr-1 fill-current" />
-                        )}
-                        {uiLanguage === "zh" ? "停止" : "Stop"}
-                      </Button>
-                    ) : (
-                      <Button
-                        onClick={handleSendMessage}
-                        size="sm"
-                        disabled={
-                          !manualPaused &&
-                          !inputValue.trim() &&
-                          attachments.length === 0
-                        }
-                        className="h-10 rounded-full bg-black px-4 text-white dark:bg-white dark:text-black hover:bg-gray-800 dark:hover:bg-gray-200"
-                      >
-                        {manualPaused ? (
-                          <Play className="h-4 w-4 mr-1" />
-                        ) : (
-                          <Send className="h-4 w-4 mr-1" />
-                        )}
-                        {manualPaused
-                          ? uiLanguage === "zh"
-                            ? "继续分析"
-                            : "Continue"
-                          : uiLanguage === "zh"
-                            ? "发送"
-                            : "Send"}
-                      </Button>
-                    )}
-                    {renderClearChatButton("h-10 rounded-full px-3")}
-                  </div>
-                </div>
-              </div>
+                renderChatComposer(
+                  "p-4 border-t border-gray-200 dark:border-gray-800 shrink-0 bg-white/80 dark:bg-gray-950/80"
+                )
               )}
 
             </div>
