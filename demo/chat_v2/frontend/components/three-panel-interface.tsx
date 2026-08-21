@@ -51,6 +51,7 @@ import { API_URLS, API_CONFIG, buildApiUrlWithParams } from "@/lib/config";
 import { buildLineDiff } from "@/lib/code-ai-edit";
 import {
   buildSessionStorageKey,
+  getActiveAnalysisAssistantMessageIndexes,
   isAwaitingManualContinuation,
   normalizeSessionMessages,
   normalizeInteractionMode,
@@ -5032,17 +5033,16 @@ export function ThreePanelInterface() {
   }, [parseMessageIndexFromSectionKey, touchMessageAt]);
 
   const latestAssistantMeta = useMemo(() => {
-    for (let index = messages.length - 1; index >= 0; index--) {
-      const message = messages[index];
-      if (message.sender !== "ai") continue;
-      const sections = extractSections(message.content, index);
-      return {
-        message,
-        index,
-        sections,
-      };
-    }
-    return null;
+    const assistantIndexes = getActiveAnalysisAssistantMessageIndexes(messages);
+    if (assistantIndexes.length === 0) return null;
+    const index = assistantIndexes[assistantIndexes.length - 1];
+    return {
+      message: messages[index],
+      index,
+      sections: assistantIndexes.flatMap((messageIndex) =>
+        extractSections(messages[messageIndex].content, messageIndex)
+      ),
+    };
   }, [messages]);
 
   const navigatorActiveSectionKey = useMemo(() => {
@@ -5356,6 +5356,7 @@ export function ThreePanelInterface() {
       return;
     }
     if (!resumePending && !inputValue.trim() && attachments.length === 0) return;
+    if (resumePending) setManualPaused(false);
     const additionalInstruction = resumePending ? inputValue.trim() : "";
     const shouldAppendUserMessage = resumePending
       ? !!additionalInstruction

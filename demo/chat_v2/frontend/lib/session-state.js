@@ -10,6 +10,37 @@ function isAwaitingManualContinuation(interactionState) {
   return interactionState?.status === "awaiting_user";
 }
 
+function isManualInstructionMessage(message) {
+  const sender = message?.sender || (message?.role === "user" ? "user" : "");
+  return (
+    sender === "user" &&
+    String(message?.id || "").startsWith("manual-instruction-")
+  );
+}
+
+function getActiveAnalysisAssistantMessageIndexes(messages) {
+  if (!Array.isArray(messages)) return [];
+  let analysisStartIndex = 0;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    const sender =
+      message?.sender || (message?.role === "assistant" ? "ai" : message?.role);
+    if (sender === "user" && !isManualInstructionMessage(message)) {
+      analysisStartIndex = index + 1;
+      break;
+    }
+  }
+
+  const assistantIndexes = [];
+  for (let index = analysisStartIndex; index < messages.length; index += 1) {
+    const message = messages[index];
+    const sender =
+      message?.sender || (message?.role === "assistant" ? "ai" : message?.role);
+    if (sender === "ai" && !message?.localOnly) assistantIndexes.push(index);
+  }
+  return assistantIndexes;
+}
+
 function normalizeSessionMessages(messages, now = () => new Date()) {
   if (!Array.isArray(messages)) return [];
   return messages
@@ -61,6 +92,7 @@ module.exports = {
   buildSessionStorageKey,
   normalizeInteractionMode,
   isAwaitingManualContinuation,
+  getActiveAnalysisAssistantMessageIndexes,
   normalizeSessionMessages,
   serializeSessionMessages,
   toServerMessages,

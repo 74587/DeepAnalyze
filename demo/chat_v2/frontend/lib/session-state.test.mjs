@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   buildSessionStorageKey,
+  getActiveAnalysisAssistantMessageIndexes,
   isAwaitingManualContinuation,
   normalizeInteractionMode,
   normalizeSessionMessages,
@@ -23,6 +24,28 @@ test("normalizes interaction mode and detects a pending manual continuation", ()
 
 test("session cache keys are isolated", () => {
   assert.notEqual(buildSessionStorageKey("one"), buildSessionStorageKey("two"));
+});
+
+test("manual continuation keeps prior assistant rounds in the active analysis", () => {
+  const messages = [
+    { id: "welcome", sender: "ai", localOnly: true },
+    { id: "task", sender: "user" },
+    { id: "round-1", sender: "ai" },
+    { id: "manual-instruction-1", sender: "user" },
+    { id: "round-2", sender: "ai" },
+    { id: "round-3", sender: "ai" },
+  ];
+  assert.deepEqual(getActiveAnalysisAssistantMessageIndexes(messages), [2, 4, 5]);
+});
+
+test("a regular user message starts a new analysis progress chain", () => {
+  const messages = [
+    { id: "task-1", sender: "user" },
+    { id: "round-1", sender: "ai" },
+    { id: "task-2", sender: "user" },
+    { id: "round-2", sender: "ai" },
+  ];
+  assert.deepEqual(getActiveAnalysisAssistantMessageIndexes(messages), [3]);
 });
 
 test("server messages restore into UI messages", () => {
