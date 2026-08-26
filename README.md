@@ -456,4 +456,4 @@ Welcome to join the [DeepAnalyze WeChat group](./assets/wechat.jpg), chat and sh
 
 If you like DeepAnalyze, give it a GitHub Star ⭐. 
 
-[![Star History Chart](https://api.star-history.com/svg?repos=ruc-datalab/DeepAnalyze&type=date&legend=top-left)](https://www.star-history.com/#ruc-datalab/DeepAnalyze&type=date&legend=top-left)
+[![Star History Chart](https://star-history.dera.page/svg?repos=ruc-datalab/DeepAnalyze&type=date&legend=top-left)](https://star-history.dera.page/#ruc-datalab/DeepAnalyze&type=date&legend=top-left)
