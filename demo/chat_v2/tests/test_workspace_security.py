@@ -90,7 +90,7 @@ class WorkspaceSecurityTest(unittest.IsolatedAsyncioTestCase):
             "palmer_penguins": 3,
             "life_expectancy": 3,
             "bike_sharing": 4,
-            "college_majors": 6,
+            "college_majors": 4,
         }
         for dataset in catalog:
             self.assertTrue(dataset["title"]["zh"])

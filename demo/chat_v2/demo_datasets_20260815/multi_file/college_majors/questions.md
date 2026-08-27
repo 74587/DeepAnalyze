@@ -20,19 +20,7 @@ English: For recent graduates, which major categories tend to combine higher ear
 
 English: How do earnings by major differ between recent graduates and workers of all ages, and which majors show the largest gaps?
 
-## 4. 研究生收入溢价 / Graduate earnings premium
-
-中文：读研在哪些专业带来的收入优势更明显，同时失业率没有变差？
-
-English: In which majors is a graduate degree associated with a clearer earnings advantage without a higher unemployment rate?
-
-## 5. 女性占比与收入 / Women's share and earnings
-
-中文：女性占比较高的专业，近期毕业生收入通常有什么不同？这种关系在不同专业类别中是否一致？
-
-English: How do recent-graduate earnings differ in majors with a higher share of women, and is the pattern consistent across major categories?
-
-## 6. 高收入低失业专业 / High-earning, low-unemployment majors
+## 4. 高收入低失业专业 / High-earning, low-unemployment majors
 
 中文：如果同时考虑收入和失业率，近期毕业生中哪些专业的表现比较突出？
 

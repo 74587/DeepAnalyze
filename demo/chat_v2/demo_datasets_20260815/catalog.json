@@ -11,8 +11,8 @@
           "id": "species_traits",
           "title": {"zh": "物种体征差异", "en": "Species trait differences"},
           "prompt": {
-            "zh": "这三种企鹅在体型和喙部特征上有什么明显区别？",
-            "en": "What are the clearest differences in body size and bill shape among the three penguin species?"
+            "zh": "三种企鹅在体重、鳍长、喙长和喙深上有哪些明显差异？请用一张对比图和一张汇总表回答，并说明如何处理 NA。",
+            "en": "What clear differences do the three penguin species show in body mass, flipper length, bill length, and bill depth? Answer with one comparison chart and one summary table, and explain how NA values were handled."
           }
         },
         {
@@ -136,22 +136,6 @@
           "prompt": {
             "zh": "近期毕业生和所有年龄从业者的专业收入差距有多大？哪些专业的差距最明显？",
             "en": "How do earnings by major differ between recent graduates and workers of all ages, and which majors show the largest gaps?"
-          }
-        },
-        {
-          "id": "graduate_premium",
-          "title": {"zh": "研究生收入溢价", "en": "Graduate earnings premium"},
-          "prompt": {
-            "zh": "读研在哪些专业带来的收入优势更明显，同时失业率没有变差？",
-            "en": "In which majors is a graduate degree associated with a clearer earnings advantage without a higher unemployment rate?"
-          }
-        },
-        {
-          "id": "women_earnings",
-          "title": {"zh": "女性占比与收入", "en": "Women's share and earnings"},
-          "prompt": {
-            "zh": "女性占比较高的专业，近期毕业生收入通常有什么不同？这种关系在不同专业类别中是否一致？",
-            "en": "How do recent-graduate earnings differ in majors with a higher share of women, and is the pattern consistent across major categories?"
           }
         },
         {
