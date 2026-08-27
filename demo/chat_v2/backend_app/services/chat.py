@@ -64,20 +64,6 @@ _MODEL_ACTION_TAG_AT_START_RE = re.compile(
 )
 _MODEL_ACTION_TAG_RE = re.compile(r"<(?:Analyze|Understand|Code|Answer)>")
 _MODEL_ACTION_CLOSE_TAG_RE = re.compile(r"</(?:Analyze|Understand|Code|Answer)>")
-_TERMINAL_ACTION_RE = re.compile(r"<(Code|Answer)>")
-
-
-def _ensure_understand_action(normalized: str) -> str:
-    """保证可展示的模型回合包含一个简短的任务理解区块。"""
-    if "<Understand>" in normalized:
-        return normalized
-    match = _TERMINAL_ACTION_RE.search(normalized)
-    if match is None:
-        return normalized
-    understand = "<Understand>已确认当前任务与可用数据，继续处理。</Understand>\n"
-    return normalized[: match.start()] + understand + normalized[match.start() :]
-
-
 @dataclass(frozen=True)
 class ChatRuntimeConfig:
     provider: str = "local"
@@ -882,16 +868,6 @@ def bot_stream(
 
             try:
                 normalized_res, actions = normalize_model_output(cur_res)
-            except ProtocolValidationError as exc:
-                yield _execution_status_block("Protocol Error", str(exc))
-                break
-            if stream_model_output and "<Understand>" not in normalized_res:
-                terminal_match = _TERMINAL_ACTION_RE.search(normalized_res)
-                if terminal_match is not None:
-                    yield "<Understand>已确认当前任务与可用数据，继续处理。</Understand>\n"
-            normalized_res = _ensure_understand_action(normalized_res)
-            try:
-                normalized_res, actions = normalize_model_output(normalized_res)
             except ProtocolValidationError as exc:
                 yield _execution_status_block("Protocol Error", str(exc))
                 break
