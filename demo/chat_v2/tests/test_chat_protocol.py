@@ -544,7 +544,7 @@ class ChatProtocolIntegrationTest(unittest.TestCase):
             )
         self.assertEqual(
             output.split("\n<File>", 1)[0],
-            "<Analyze>Here is the result.</Analyze>\n<Answer>done</Answer>",
+            "<Analyze>Here is the result.</Analyze>\n<Understand>已确认当前任务与可用数据，继续处理。</Understand>\n<Answer>done</Answer>",
         )
         self.assertNotIn("Protocol Warning", output)
 
@@ -701,6 +701,22 @@ class ChatProtocolIntegrationTest(unittest.TestCase):
                 )
             )
         self.assertNotIn("[Session Busy]", output)
+        self.assertIn("<Answer>done</Answer>", output)
+
+    def test_answer_without_understand_gets_synthetic_understand(self):
+        with patch.object(
+            chat,
+            "_iter_local_stream",
+            return_value=stream_text("<Answer>done</Answer>"),
+        ):
+            output = "".join(
+                chat.bot_stream(
+                    [{"role": "user", "content": "answer directly"}],
+                    [],
+                    "session-synthetic-understand",
+                )
+            )
+        self.assertIn("<Understand>已确认当前任务与可用数据，继续处理。</Understand>", output)
         self.assertIn("<Answer>done</Answer>", output)
 
     def test_stop_endpoint_closes_a_blocked_upstream_stream(self):

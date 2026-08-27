@@ -8,14 +8,6 @@
       "files": ["single_file/palmer_penguins/penguins.csv"],
       "questions": [
         {
-          "id": "species_traits",
-          "title": {"zh": "物种体征差异", "en": "Species trait differences"},
-          "prompt": {
-            "zh": "请先删除含 NA 的行，再按物种计算体重、鳍长、喙长和喙深的平均值。用一张汇总表比较三种企鹅，并指出每项指标的最高和最低物种。",
-            "en": "After removing rows with NA, calculate the mean body mass, flipper length, bill length, and bill depth for each species. Compare the three species in one summary table and identify the highest and lowest species for each measure."
-          }
-        },
-        {
           "id": "sex_body_mass",
           "title": {"zh": "雌雄体重差异", "en": "Body mass by sex"},
           "prompt": {
@@ -44,16 +36,8 @@
           "id": "long_term_gain",
           "title": {"zh": "长期提升排名", "en": "Long-run improvement ranking"},
           "prompt": {
-            "zh": "只使用这六国在 year=1950 和 year=2023 的记录，计算 2023 减 1950 的预期寿命差值并排序；哪个国家提升最多？",
-            "en": "Use only the records with year=1950 and year=2023 for these six countries. Calculate 2023 minus 1950, rank the gains, and identify the country with the largest increase."
-          }
-        },
-        {
-          "id": "largest_declines",
-          "title": {"zh": "显著下降年份", "en": "Largest decline years"},
-          "prompt": {
-            "zh": "在每个国家的完整时间范围内，计算相邻年份的预期寿命差值（当年减前一年），分别列出每国降幅最大的一年，并指出六国中最大的一次下降。",
-            "en": "Across the complete time range available for each country, calculate year-over-year differences (current year minus previous year). Report the year with the largest drop for each country and identify the largest drop among all six."
+            "zh": "从 1950 年到 2023 年，中国、美国、印度、日本、巴西和南非中哪个国家的预期寿命提升最多？",
+            "en": "From 1950 to 2023, which of China, the United States, India, Japan, Brazil, and South Africa gained the most in life expectancy?"
           }
         },
         {
@@ -114,30 +98,6 @@
       "description": {"zh": "四张相关表，适合字段关联、收入、失业率与人群口径比较。", "en": "Four related tables for joins, earnings, unemployment, and population-definition comparisons."},
       "files": ["multi_file/college_majors/recent-grads.csv", "multi_file/college_majors/all-ages.csv", "multi_file/college_majors/grad-students.csv", "multi_file/college_majors/majors-list.csv"],
       "questions": [
-        {
-          "id": "join_quality",
-          "title": {"zh": "多表关联质量", "en": "Cross-file join quality"},
-          "prompt": {
-            "zh": "用 Major_code 作为键检查 recent-grads、all-ages、grad-students 和 majors-list 的关联：共同专业有多少个？每张表各有多少个无法匹配的代码？",
-            "en": "Use Major_code as the join key across recent-grads, all-ages, grad-students, and majors-list. How many majors are common to all four files, and how many codes in each file fail to match?"
-          }
-        },
-        {
-          "id": "category_outcomes",
-          "title": {"zh": "专业类别就业表现", "en": "Outcomes by major category"},
-          "prompt": {
-            "zh": "在 recent-grads 中按 Major_category 分组，计算每类 Median 的中位数和 Unemployment_rate 的平均值；列出收入最高、失业率最低的类别及其数值。",
-            "en": "In recent-grads, group by Major_category and calculate the median of Median and the mean of Unemployment_rate for each category. Report the category with the highest income and the category with the lowest unemployment, with their values."
-          }
-        },
-        {
-          "id": "age_group_earnings",
-          "title": {"zh": "不同年龄口径收入差异", "en": "Earnings across age groups"},
-          "prompt": {
-            "zh": "按 Major_code 对齐 recent-grads 和 all-ages，计算每个专业的 Median(all-ages) - Median(recent-grads)，列出差值最大的五个专业。",
-            "en": "Join recent-grads and all-ages by Major_code. For each major, calculate Median(all-ages) minus Median(recent-grads), and list the five largest gaps."
-          }
-        },
         {
           "id": "major_shortlist",
           "title": {"zh": "高收入低失业专业", "en": "High-earning, low-unemployment majors"},
