@@ -11,8 +11,8 @@
           "id": "species_traits",
           "title": {"zh": "物种体征差异", "en": "Species trait differences"},
           "prompt": {
-            "zh": "三种企鹅在体重、鳍长、喙长和喙深上有哪些明显差异？请用一张对比图和一张汇总表回答，并说明如何处理 NA。",
-            "en": "What clear differences do the three penguin species show in body mass, flipper length, bill length, and bill depth? Answer with one comparison chart and one summary table, and explain how NA values were handled."
+            "zh": "请先删除含 NA 的行，再按物种计算体重、鳍长、喙长和喙深的平均值。用一张汇总表比较三种企鹅，并指出每项指标的最高和最低物种。",
+            "en": "After removing rows with NA, calculate the mean body mass, flipper length, bill length, and bill depth for each species. Compare the three species in one summary table and identify the highest and lowest species for each measure."
           }
         },
         {
@@ -44,16 +44,16 @@
           "id": "long_term_gain",
           "title": {"zh": "长期提升排名", "en": "Long-run improvement ranking"},
           "prompt": {
-            "zh": "从 1950 年到 2023 年，中国、美国、印度、日本、巴西和南非中哪个国家的预期寿命提升最多？它们的长期变化趋势有什么不同？",
-            "en": "From 1950 to 2023, which of China, the United States, India, Japan, Brazil, and South Africa gained the most in life expectancy, and how did their long-term trends differ?"
+            "zh": "只使用这六国在 year=1950 和 year=2023 的记录，计算 2023 减 1950 的预期寿命差值并排序；哪个国家提升最多？",
+            "en": "Use only the records with year=1950 and year=2023 for these six countries. Calculate 2023 minus 1950, rank the gains, and identify the country with the largest increase."
           }
         },
         {
           "id": "largest_declines",
           "title": {"zh": "显著下降年份", "en": "Largest decline years"},
           "prompt": {
-            "zh": "中国、美国、印度、日本、巴西和南非的预期寿命曾在哪些年份明显下降？哪个国家的降幅最大？",
-            "en": "In which years did life expectancy fall noticeably in China, the United States, India, Japan, Brazil, and South Africa, and which country had the largest decline?"
+            "zh": "在每个国家的完整时间范围内，计算相邻年份的预期寿命差值（当年减前一年），分别列出每国降幅最大的一年，并指出六国中最大的一次下降。",
+            "en": "Across the complete time range available for each country, calculate year-over-year differences (current year minus previous year). Report the year with the largest drop for each country and identify the largest drop among all six."
           }
         },
         {
@@ -118,32 +118,32 @@
           "id": "join_quality",
           "title": {"zh": "多表关联质量", "en": "Cross-file join quality"},
           "prompt": {
-            "zh": "我想结合这几份数据比较不同专业的就业情况。它们能否可靠关联，有哪些专业匹配不上或信息不一致？",
-            "en": "I want to combine these files to compare employment outcomes across majors. Can they be joined reliably, and which majors are unmatched or inconsistent?"
+            "zh": "用 Major_code 作为键检查 recent-grads、all-ages、grad-students 和 majors-list 的关联：共同专业有多少个？每张表各有多少个无法匹配的代码？",
+            "en": "Use Major_code as the join key across recent-grads, all-ages, grad-students, and majors-list. How many majors are common to all four files, and how many codes in each file fail to match?"
           }
         },
         {
           "id": "category_outcomes",
           "title": {"zh": "专业类别就业表现", "en": "Outcomes by major category"},
           "prompt": {
-            "zh": "对近期毕业生来说，哪些专业类别通常收入较高、失业率又较低？各类别之间的差距有多大？",
-            "en": "For recent graduates, which major categories tend to combine higher earnings with lower unemployment, and how large are the differences between categories?"
+            "zh": "在 recent-grads 中按 Major_category 分组，计算每类 Median 的中位数和 Unemployment_rate 的平均值；列出收入最高、失业率最低的类别及其数值。",
+            "en": "In recent-grads, group by Major_category and calculate the median of Median and the mean of Unemployment_rate for each category. Report the category with the highest income and the category with the lowest unemployment, with their values."
           }
         },
         {
           "id": "age_group_earnings",
           "title": {"zh": "不同年龄口径收入差异", "en": "Earnings across age groups"},
           "prompt": {
-            "zh": "近期毕业生和所有年龄从业者的专业收入差距有多大？哪些专业的差距最明显？",
-            "en": "How do earnings by major differ between recent graduates and workers of all ages, and which majors show the largest gaps?"
+            "zh": "按 Major_code 对齐 recent-grads 和 all-ages，计算每个专业的 Median(all-ages) - Median(recent-grads)，列出差值最大的五个专业。",
+            "en": "Join recent-grads and all-ages by Major_code. For each major, calculate Median(all-ages) minus Median(recent-grads), and list the five largest gaps."
           }
         },
         {
           "id": "major_shortlist",
           "title": {"zh": "高收入低失业专业", "en": "High-earning, low-unemployment majors"},
           "prompt": {
-            "zh": "如果同时考虑收入和失业率，近期毕业生中哪些专业的表现比较突出？",
-            "en": "When both earnings and unemployment are considered, which majors stand out for recent graduates?"
+            "zh": "在 recent-grads 中筛选 Median 不低于 50000 且 Unemployment_rate 低于 0.05 的专业，并按 Median 从高到低列出。",
+            "en": "In recent-grads, filter for majors with Median at least 50000 and Unemployment_rate below 0.05, then list them in descending order of Median."
           }
         }
       ]

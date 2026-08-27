@@ -4,24 +4,24 @@
 
 ## 1. 多表关联质量 / Cross-file join quality
 
-中文：我想结合这几份数据比较不同专业的就业情况。它们能否可靠关联，有哪些专业匹配不上或信息不一致？
+中文：用 Major_code 作为键检查 recent-grads、all-ages、grad-students 和 majors-list 的关联：共同专业有多少个？每张表各有多少个无法匹配的代码？
 
-English: I want to combine these files to compare employment outcomes across majors. Can they be joined reliably, and which majors are unmatched or inconsistent?
+English: Use Major_code as the join key across recent-grads, all-ages, grad-students, and majors-list. How many majors are common to all four files, and how many codes in each file fail to match?
 
 ## 2. 专业类别就业表现 / Outcomes by major category
 
-中文：对近期毕业生来说，哪些专业类别通常收入较高、失业率又较低？各类别之间的差距有多大？
+中文：在 recent-grads 中按 Major_category 分组，计算每类 Median 的中位数和 Unemployment_rate 的平均值；列出收入最高、失业率最低的类别及其数值。
 
-English: For recent graduates, which major categories tend to combine higher earnings with lower unemployment, and how large are the differences between categories?
+English: In recent-grads, group by Major_category and calculate the median of Median and the mean of Unemployment_rate for each category. Report the category with the highest income and the category with the lowest unemployment, with their values.
 
 ## 3. 不同年龄口径收入差异 / Earnings across age groups
 
-中文：近期毕业生和所有年龄从业者的专业收入差距有多大？哪些专业的差距最明显？
+中文：按 Major_code 对齐 recent-grads 和 all-ages，计算每个专业的 Median(all-ages) - Median(recent-grads)，列出差值最大的五个专业。
 
-English: How do earnings by major differ between recent graduates and workers of all ages, and which majors show the largest gaps?
+English: Join recent-grads and all-ages by Major_code. For each major, calculate Median(all-ages) minus Median(recent-grads), and list the five largest gaps.
 
 ## 4. 高收入低失业专业 / High-earning, low-unemployment majors
 
-中文：如果同时考虑收入和失业率，近期毕业生中哪些专业的表现比较突出？
+中文：在 recent-grads 中筛选 Median 不低于 50000 且 Unemployment_rate 低于 0.05 的专业，并按 Median 从高到低列出。
 
-English: When both earnings and unemployment are considered, which majors stand out for recent graduates?
+English: In recent-grads, filter for majors with Median at least 50000 and Unemployment_rate below 0.05, then list them in descending order of Median.
