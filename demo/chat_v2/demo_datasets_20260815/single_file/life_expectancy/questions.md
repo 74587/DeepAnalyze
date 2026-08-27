@@ -4,18 +4,18 @@
 
 ## 1. 长期提升排名 / Long-run improvement ranking
 
-中文：1950-2023 年，中国、美国、印度、日本、巴西和南非中哪个国家的预期寿命提升最多？请用一张折线图和一张增幅排名表回答。
+中文：从 1950 年到 2023 年，中国、美国、印度、日本、巴西和南非中哪个国家的预期寿命提升最多？它们的长期变化趋势有什么不同？
 
-English: From 1950 to 2023, which of China, the United States, India, Japan, Brazil, and South Africa improved the most in life expectancy? Answer with one line chart and one ranked table of gains.
+English: From 1950 to 2023, which of China, the United States, India, Japan, Brazil, and South Africa gained the most in life expectancy, and how did their long-term trends differ?
 
 ## 2. 显著下降年份 / Largest decline years
 
-中文：这六个国家中，哪些国家曾出现最显著的单年或连续预期寿命下降？请列出年份、幅度，并用图标出主要下降点。
+中文：中国、美国、印度、日本、巴西和南非的预期寿命曾在哪些年份明显下降？哪个国家的降幅最大？
 
-English: Which of the six countries experienced the largest single-year or consecutive declines in life expectancy? List the years and magnitudes, and mark the main drops in one chart.
+English: In which years did life expectancy fall noticeably in China, the United States, India, Japan, Brazil, and South Africa, and which country had the largest decline?
 
 ## 3. 疫情后恢复 / Post-pandemic recovery
 
-中文：比较六国 2019-2023 年的预期寿命：哪些国家已恢复到 2019 年水平，哪些没有？请用一张对比表和一张折线图回答。
+中文：从 2019 年到 2023 年，中国、美国、印度、日本、巴西和南非的预期寿命如何变化？到 2023 年，哪些国家已经回到或超过 2019 年水平？
 
-English: Compare life expectancy in the six countries from 2019 to 2023: which returned to their 2019 level and which did not? Answer with one comparison table and one line chart.
+English: How did life expectancy change from 2019 to 2023 in China, the United States, India, Japan, Brazil, and South Africa, and which countries had returned to or exceeded their 2019 level by 2023?

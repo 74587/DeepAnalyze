@@ -11,24 +11,24 @@
           "id": "species_traits",
           "title": {"zh": "物种体征差异", "en": "Species trait differences"},
           "prompt": {
-            "zh": "分析这些数据，找出三种企鹅之间的差异。",
-            "en": "Analyze this data and find the differences among the three penguin species."
+            "zh": "这三种企鹅在体型和喙部特征上有什么明显区别？",
+            "en": "What are the clearest differences in body size and bill shape among the three penguin species?"
           }
         },
         {
           "id": "sex_body_mass",
           "title": {"zh": "雌雄体重差异", "en": "Body mass by sex"},
           "prompt": {
-            "zh": "在每个企鹅物种内部，雌雄体重差异是否一致？请报告样本数、均值和中位数，并用一张图展示。",
-            "en": "Within each penguin species, is the body-mass difference between females and males consistent? Report sample size, mean, and median, and show the comparison in one chart."
+            "zh": "不同物种的雌雄企鹅体重差异有多大？哪些物种的差异最明显？",
+            "en": "How much does body mass differ between female and male penguins within each species, and which species shows the largest difference?"
           }
         },
         {
           "id": "flipper_body_mass",
           "title": {"zh": "鳍长与体重", "en": "Flipper length and body mass"},
           "prompt": {
-            "zh": "鳍长与体重的关系有多强？请用按物种着色的散点图回答，并说明控制物种差异后关系是否仍然明显。",
-            "en": "How strong is the relationship between flipper length and body mass? Answer with a scatter plot colored by species and explain whether the relationship remains clear after accounting for species."
+            "zh": "企鹅的鳍越长通常会越重吗？分别看三种企鹅时，这种关系是否仍然存在？",
+            "en": "Do penguins with longer flippers tend to weigh more, and does the pattern still hold when each species is considered separately?"
           }
         }
       ]
@@ -44,24 +44,24 @@
           "id": "long_term_gain",
           "title": {"zh": "长期提升排名", "en": "Long-run improvement ranking"},
           "prompt": {
-            "zh": "1950-2023 年，中国、美国、印度、日本、巴西和南非中哪个国家的预期寿命提升最多？请用一张折线图和一张增幅排名表回答。",
-            "en": "From 1950 to 2023, which of China, the United States, India, Japan, Brazil, and South Africa improved the most in life expectancy? Answer with one line chart and one ranked table of gains."
+            "zh": "从 1950 年到 2023 年，中国、美国、印度、日本、巴西和南非中哪个国家的预期寿命提升最多？它们的长期变化趋势有什么不同？",
+            "en": "From 1950 to 2023, which of China, the United States, India, Japan, Brazil, and South Africa gained the most in life expectancy, and how did their long-term trends differ?"
           }
         },
         {
           "id": "largest_declines",
           "title": {"zh": "显著下降年份", "en": "Largest decline years"},
           "prompt": {
-            "zh": "这六个国家中，哪些国家曾出现最显著的单年或连续预期寿命下降？请列出年份、幅度，并用图标出主要下降点。",
-            "en": "Which of the six countries experienced the largest single-year or consecutive declines in life expectancy? List the years and magnitudes, and mark the main drops in one chart."
+            "zh": "中国、美国、印度、日本、巴西和南非的预期寿命曾在哪些年份明显下降？哪个国家的降幅最大？",
+            "en": "In which years did life expectancy fall noticeably in China, the United States, India, Japan, Brazil, and South Africa, and which country had the largest decline?"
           }
         },
         {
           "id": "pandemic_recovery",
           "title": {"zh": "疫情后恢复", "en": "Post-pandemic recovery"},
           "prompt": {
-            "zh": "比较六国 2019-2023 年的预期寿命：哪些国家已恢复到 2019 年水平，哪些没有？请用一张对比表和一张折线图回答。",
-            "en": "Compare life expectancy in the six countries from 2019 to 2023: which returned to their 2019 level and which did not? Answer with one comparison table and one line chart."
+            "zh": "从 2019 年到 2023 年，中国、美国、印度、日本、巴西和南非的预期寿命如何变化？到 2023 年，哪些国家已经回到或超过 2019 年水平？",
+            "en": "How did life expectancy change from 2019 to 2023 in China, the United States, India, Japan, Brazil, and South Africa, and which countries had returned to or exceeded their 2019 level by 2023?"
           }
         }
       ]
@@ -77,32 +77,32 @@
           "id": "file_consistency",
           "title": {"zh": "日表与小时表核对", "en": "Daily-hourly reconciliation"},
           "prompt": {
-            "zh": "hour.csv 按日期汇总后是否与 day.csv 的 casual、registered 和 cnt 完全一致？请报告不一致日期数量、最大差异，并保存核对表。",
-            "en": "After aggregating hour.csv by date, do casual, registered, and cnt exactly match day.csv? Report the number of mismatched dates and the largest difference, and save the reconciliation table."
+            "zh": "这两份数据记录的每日骑行量一致吗？如果有差异，主要出现在哪些日期和用户类型？",
+            "en": "Do the two files report the same daily ride totals? If not, on which dates and for which user types do the main differences appear?"
           }
         },
         {
           "id": "annual_growth",
           "title": {"zh": "年度增长", "en": "Annual growth"},
           "prompt": {
-            "zh": "2012 年共享单车使用量相对 2011 年增长了多少？请区分注册用户和临时用户，并用一张对比图展示。",
-            "en": "How much did bike-sharing usage grow in 2012 compared with 2011? Separate registered and casual users and show the comparison in one chart."
+            "zh": "2012 年的共享单车使用量比 2011 年增长了多少？注册用户和临时用户的增长情况有什么不同？",
+            "en": "How much did bike-sharing usage grow in 2012 compared with 2011, and how did the growth differ between registered and casual users?"
           }
         },
         {
           "id": "hourly_peaks",
-          "title": {"zh": "工作日与周末高峰", "en": "Working-day and weekend peaks"},
+          "title": {"zh": "工作日与非工作日高峰", "en": "Working and non-working day peaks"},
           "prompt": {
-            "zh": "工作日和周末的共享单车使用高峰分别在几点？请用小时曲线图展示差异，并标出各自高峰。",
-            "en": "At what hours does bike-sharing usage peak on working days and weekends? Show the difference with hourly curves and mark each peak."
+            "zh": "工作日和非工作日的骑行高峰分别在几点？一天中的使用模式有什么不同？",
+            "en": "At what times does bike-sharing usage peak on working and non-working days, and how do their daily usage patterns differ?"
           }
         },
         {
           "id": "weather_demand",
           "title": {"zh": "天气与骑行量", "en": "Weather and ride demand"},
           "prompt": {
-            "zh": "不同天气状况下的共享单车使用量有何差异？请同时报告每类天气的样本数和典型骑行量，避免用少量样本得出强结论。",
-            "en": "How does bike-sharing usage differ across weather conditions? Report the sample count and typical ride volume for each category so rare conditions do not support strong conclusions."
+            "zh": "不同天气状况下的共享单车使用量有什么差别？哪些天气下骑行量最高或最低，这些结果的数据量是否充足？",
+            "en": "How does bike-sharing usage vary with the weather? Which conditions have the highest and lowest ride volumes, and is there enough data for each comparison?"
           }
         }
       ]
@@ -118,48 +118,48 @@
           "id": "join_quality",
           "title": {"zh": "多表关联质量", "en": "Cross-file join quality"},
           "prompt": {
-            "zh": "各文件中的专业代码、专业名和类别能否正确对应？请列出无法关联或存在冲突的记录，并保存核对表。",
-            "en": "Do major codes, names, and categories align correctly across the files? List any unmatched or conflicting records and save the reconciliation table."
+            "zh": "我想结合这几份数据比较不同专业的就业情况。它们能否可靠关联，有哪些专业匹配不上或信息不一致？",
+            "en": "I want to combine these files to compare employment outcomes across majors. Can they be joined reliably, and which majors are unmatched or inconsistent?"
           }
         },
         {
           "id": "category_outcomes",
           "title": {"zh": "专业类别就业表现", "en": "Outcomes by major category"},
           "prompt": {
-            "zh": "近期毕业生中，哪些专业类别的收入较高且失业率较低？请报告各类别的专业数和样本规模，并用一张图比较。",
-            "en": "Among recent graduates, which major categories combine higher earnings with lower unemployment? Report the number of majors and sample size per category and compare them in one chart."
+            "zh": "对近期毕业生来说，哪些专业类别通常收入较高、失业率又较低？各类别之间的差距有多大？",
+            "en": "For recent graduates, which major categories tend to combine higher earnings with lower unemployment, and how large are the differences between categories?"
           }
         },
         {
           "id": "age_group_earnings",
           "title": {"zh": "不同年龄口径收入差异", "en": "Earnings across age groups"},
           "prompt": {
-            "zh": "同一专业在 recent-grads.csv 与 all-ages.csv 中的收入中位数差距有多大？请列出差距最大的 10 个专业，并说明这不是个人薪资增长。",
-            "en": "How large is the median-earnings gap for the same major between recent-grads.csv and all-ages.csv? List the ten largest gaps and explain that this is not an individual's salary growth."
+            "zh": "近期毕业生和所有年龄从业者的专业收入差距有多大？哪些专业的差距最明显？",
+            "en": "How do earnings by major differ between recent graduates and workers of all ages, and which majors show the largest gaps?"
           }
         },
         {
           "id": "graduate_premium",
           "title": {"zh": "研究生收入溢价", "en": "Graduate earnings premium"},
           "prompt": {
-            "zh": "哪些专业的研究生收入溢价较高，同时研究生失业率没有明显恶化？请给出一个透明筛选标准和前 10 名表格。",
-            "en": "Which majors have a high graduate earnings premium without clearly worse graduate unemployment? Define a transparent screening rule and provide a top-ten table."
+            "zh": "读研在哪些专业带来的收入优势更明显，同时失业率没有变差？",
+            "en": "In which majors is a graduate degree associated with a clearer earnings advantage without a higher unemployment rate?"
           }
         },
         {
           "id": "women_earnings",
           "title": {"zh": "女性占比与收入", "en": "Women's share and earnings"},
           "prompt": {
-            "zh": "近期毕业生中，女性占比与收入中位数有什么关系？请用散点图展示，并说明按专业类别比较后关系是否仍然明显，不要把相关性表述为因果。",
-            "en": "Among recent graduates, how is women's share related to median earnings? Show the relationship in a scatter plot and explain whether it remains clear within major categories, without presenting correlation as causation."
+            "zh": "女性占比较高的专业，近期毕业生收入通常有什么不同？这种关系在不同专业类别中是否一致？",
+            "en": "How do recent-graduate earnings differ in majors with a higher share of women, and is the pattern consistent across major categories?"
           }
         },
         {
           "id": "major_shortlist",
           "title": {"zh": "高收入低失业专业", "en": "High-earning, low-unemployment majors"},
           "prompt": {
-            "zh": "近期毕业生中，哪些专业呈现“收入较高且失业率较低”？请给出透明筛选标准、前 10 名表格和一张散点图。",
-            "en": "Among recent graduates, which majors combine relatively high earnings with low unemployment? Define a transparent screening rule and provide a top-ten table and one scatter plot."
+            "zh": "如果同时考虑收入和失业率，近期毕业生中哪些专业的表现比较突出？",
+            "en": "When both earnings and unemployment are considered, which majors stand out for recent graduates?"
           }
         }
       ]

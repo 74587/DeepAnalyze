@@ -4,18 +4,18 @@
 
 ## 1. 物种体征差异 / Species trait differences
 
-中文：分析这些数据，找出三种企鹅之间的差异。
+中文：这三种企鹅在体型和喙部特征上有什么明显区别？
 
-English: Analyze this data and find the differences among the three penguin species.
+English: What are the clearest differences in body size and bill shape among the three penguin species?
 
 ## 2. 雌雄体重差异 / Body mass by sex
 
-中文：在每个企鹅物种内部，雌雄体重差异是否一致？请报告样本数、均值和中位数，并用一张图展示。
+中文：不同物种的雌雄企鹅体重差异有多大？哪些物种的差异最明显？
 
-English: Within each penguin species, is the body-mass difference between females and males consistent? Report sample size, mean, and median, and show the comparison in one chart.
+English: How much does body mass differ between female and male penguins within each species, and which species shows the largest difference?
 
 ## 3. 鳍长与体重 / Flipper length and body mass
 
-中文：鳍长与体重的关系有多强？请用按物种着色的散点图回答，并说明控制物种差异后关系是否仍然明显。
+中文：企鹅的鳍越长通常会越重吗？分别看三种企鹅时，这种关系是否仍然存在？
 
-English: How strong is the relationship between flipper length and body mass? Answer with a scatter plot colored by species and explain whether the relationship remains clear after accounting for species.
+English: Do penguins with longer flippers tend to weigh more, and does the pattern still hold when each species is considered separately?
