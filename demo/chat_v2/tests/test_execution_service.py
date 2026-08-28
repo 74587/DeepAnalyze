@@ -38,6 +38,7 @@ class ManagedExecutionServiceTest(unittest.TestCase):
         self.assertIn("before.py", outcome.diff)
         self.assertIn("<Code>", outcome.trace_content)
         self.assertIn("<Execute>", outcome.trace_content)
+        self.assertRegex(outcome.trace_content, r"result\.csv[^)]*v=\\d+")
         artifact_paths = {str(item["path"]) for item in outcome.artifacts}
         self.assertTrue(any(path.endswith("result.csv") for path in artifact_paths))
         self.assertTrue(any(path.startswith("generated/code/") for path in artifact_paths))

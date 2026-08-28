@@ -2891,6 +2891,10 @@ export function ThreePanelInterface() {
         } else {
           nextUrl.searchParams.delete("download");
         }
+        const version = parsed.searchParams.get("v");
+        if (version) {
+          nextUrl.searchParams.set("v", version);
+        }
         return `${nextUrl.pathname}${nextUrl.search}`;
       }
 

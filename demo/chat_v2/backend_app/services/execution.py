@@ -13,6 +13,7 @@ from pathlib import Path
 from .docker_executor import ensure_execution_backend_ready, execute_python_in_docker
 from .workspace import (
     build_download_url,
+    _versioned_workspace_transfer_url,
     is_internal_workspace_path,
     register_generated_paths,
     uniquify_path,
@@ -209,7 +210,9 @@ def build_file_block(
         except Exception:
             rel_path = path.name
 
-        url = build_download_url(f"{session_id}/{rel_path}")
+        url = _versioned_workspace_transfer_url(
+            build_download_url(f"{session_id}/{rel_path}"), path
+        )
         name = path.name
         lines.append(f"- [{name}]({url})")
         if path.suffix.lower() in IMAGE_EXTENSIONS:
