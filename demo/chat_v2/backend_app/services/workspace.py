@@ -85,6 +85,15 @@ def _build_workspace_transfer_url(rel_path: str, *, download: bool) -> str:
     return f"/workspace/download?{urlencode(params, quote_via=quote)}"
 
 
+def _versioned_workspace_transfer_url(url: str, file_path: Path) -> str:
+    """为同名文件覆盖生成新的资源 URL，避免浏览器复用旧缓存。"""
+    try:
+        version = file_path.stat().st_mtime_ns
+    except OSError:
+        version = 0
+    return f"{url}{'&' if '?' in url else '?'}v={version}"
+
+
 def build_download_url(rel_path: str) -> str:
     return _build_workspace_transfer_url(rel_path, download=True)
 
@@ -601,13 +610,14 @@ def list_workspace_files(session_id: str) -> list[dict]:
                 "name": file_path.name,
                 "path": rel,
                 "size": file_path.stat().st_size,
+                "modified_at_ns": file_path.stat().st_mtime_ns,
                 "extension": file_path.suffix.lower(),
                 "icon": get_file_icon(file_path.suffix),
                 "category": classify_file_type(file_path),
                 "is_generated": _is_generated_workspace_path(rel, generated_index),
-                "download_url": build_download_url(rel_path),
+                "download_url": _versioned_workspace_transfer_url(build_download_url(rel_path), file_path),
                 "preview_url": (
-                    build_preview_url(rel_path)
+                    _versioned_workspace_transfer_url(build_preview_url(rel_path), file_path)
                     if file_path.suffix.lower() in PREVIEWABLE_EXTENSIONS
                     else None
                 ),
@@ -705,12 +715,17 @@ def build_tree(
 
     rel = _rel_path(path, root)
     node["size"] = path.stat().st_size
+    node["modified_at_ns"] = path.stat().st_mtime_ns
     node["extension"] = path.suffix.lower()
     node["icon"] = get_file_icon(path.suffix)
     node["is_generated"] = _is_generated_workspace_path(rel, generated_index)
-    node["download_url"] = build_download_url(f"{session_id}/{rel}")
+    node["download_url"] = _versioned_workspace_transfer_url(
+        build_download_url(f"{session_id}/{rel}"), path
+    )
     if path.suffix.lower() in PREVIEWABLE_EXTENSIONS:
-        node["preview_url"] = build_preview_url(f"{session_id}/{rel}")
+        node["preview_url"] = _versioned_workspace_transfer_url(
+            build_preview_url(f"{session_id}/{rel}"), path
+        )
     return node
 
 

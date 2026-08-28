@@ -1,4 +1,5 @@
 import io
+import os
 import tempfile
 import unittest
 from dataclasses import replace
@@ -225,6 +226,21 @@ class WorkspaceSecurityTest(unittest.IsolatedAsyncioTestCase):
         by_path = {file["path"]: file for file in files}
         self.assertFalse(by_path["report.md"]["is_generated"])
         self.assertTrue(by_path["generated/report.md"]["is_generated"])
+
+    def test_list_workspace_files_changes_version_when_same_name_is_overwritten(self):
+        root = workspace.resolve_workspace_root("session-version")
+        target = root / "generated" / "chart.png"
+        target.parent.mkdir(parents=True)
+        target.write_bytes(b"old")
+        first = workspace.list_workspace_files("session-version")
+        target.write_bytes(b"new")
+        stat = target.stat()
+        os.utime(target, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1))
+        second = workspace.list_workspace_files("session-version")
+        first_file = next(item for item in first if item["path"] == "generated/chart.png")
+        second_file = next(item for item in second if item["path"] == "generated/chart.png")
+        self.assertNotEqual(first_file["modified_at_ns"], second_file["modified_at_ns"])
+        self.assertNotEqual(first_file["preview_url"], second_file["preview_url"])
 
 
 if __name__ == "__main__":

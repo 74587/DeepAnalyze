@@ -172,6 +172,7 @@ interface WorkspaceFile {
   name: string;
   path: string;
   size: number;
+  modified_at_ns?: number;
   extension: string;
   icon: string;
   category?: "table" | "image" | "other";
@@ -1254,7 +1255,6 @@ export function ThreePanelInterface() {
     null
   );
   const [deleteIsDir, setDeleteIsDir] = useState<boolean>(false);
-  const fileRefreshTimerRef = useRef<number | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
@@ -1559,6 +1559,7 @@ export function ThreePanelInterface() {
               (item, index) =>
                 item.path === nextFiles[index]?.path &&
                 item.size === nextFiles[index]?.size &&
+                item.modified_at_ns === nextFiles[index]?.modified_at_ns &&
                 item.download_url === nextFiles[index]?.download_url &&
                 item.is_generated === nextFiles[index]?.is_generated
             )
@@ -3397,6 +3398,36 @@ export function ThreePanelInterface() {
       workspaceFiles.find((file) => file.path === selectedWorkspacePath) || null
     );
   }, [selectedWorkspacePath, workspaceFiles]);
+
+  const previewedPathRef = useRef("");
+  const previewedVersionRef = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    if (!activePreviewFile || !selectedWorkspacePath) return;
+    const version = activePreviewFile.modified_at_ns;
+    const changed =
+      previewedPathRef.current !== activePreviewFile.path ||
+      previewedVersionRef.current !== version;
+    if (!changed) return;
+    previewedPathRef.current = activePreviewFile.path;
+    previewedVersionRef.current = version;
+    if (previewTitle === activePreviewFile.name) {
+      void loadPreview(activePreviewFile, {
+        openModal: isPreviewOpen,
+        page: previewPage,
+        tableName: previewTableName,
+        sheetName: previewSheetName,
+      });
+    }
+  }, [
+    activePreviewFile,
+    isPreviewOpen,
+    loadPreview,
+    previewPage,
+    previewSheetName,
+    previewTableName,
+    previewTitle,
+    selectedWorkspacePath,
+  ]);
 
 
   const handlePreviewPageChange = useCallback(
@@ -5522,10 +5553,7 @@ export function ThreePanelInterface() {
           },
         ]);
         autoCollapseForContent(content, aiMessageIndex);
-        if (content.includes("<File>")) {
-          await loadWorkspaceTree();
-          await loadWorkspaceFiles();
-        }
+        await Promise.all([loadWorkspaceTree(), loadWorkspaceFiles()]);
         streamAbortControllerRef.current = null;
         setIsStopping(false);
         updateTypingState(false);
@@ -5557,6 +5585,7 @@ export function ThreePanelInterface() {
 
       // [修改] 用于在本地累积完整的消息内容
       let accumulatedMessage = "";
+      let refreshedExecutionCount = 0;
 
       // 更新 UI 的辅助函数
       const flushAiMessage = (visibleText: string) => {
@@ -5569,15 +5598,10 @@ export function ThreePanelInterface() {
           return next;
         });
 
-        if (visibleText.includes("<File>")) {
-          if (fileRefreshTimerRef.current) {
-            window.clearTimeout(fileRefreshTimerRef.current);
-          }
-          fileRefreshTimerRef.current = window.setTimeout(async () => {
-            await loadWorkspaceTree();
-            await loadWorkspaceFiles();
-            fileRefreshTimerRef.current = null;
-          }, 300);
+        const executionCount = (visibleText.match(/<\/Execute>/g) || []).length;
+        if (executionCount > refreshedExecutionCount) {
+          refreshedExecutionCount = executionCount;
+          void Promise.all([loadWorkspaceTree(), loadWorkspaceFiles()]);
         }
       };
 
