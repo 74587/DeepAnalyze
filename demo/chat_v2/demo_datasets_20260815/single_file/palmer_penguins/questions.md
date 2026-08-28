@@ -6,7 +6,7 @@
 
 中文：三种企鹅在体重、鳍长、喙长和喙深上有哪些明显差异？请用一张对比图和一张汇总表回答，并说明如何处理 NA。
 
-English: What clear differences do the three penguin species show in body mass, flipper length, bill length, and bill depth? Answer with one comparison chart and one summary table, and explain how NA values were handled.
+English: What clear differences do the three penguin species show?
 
 ## 2. 雌雄体重差异 / Body mass by sex
 
