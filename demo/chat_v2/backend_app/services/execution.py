@@ -1,14 +1,23 @@
 from __future__ import annotations
 
 import os
+import signal
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from pathlib import Path
 
 from .docker_executor import ensure_execution_backend_ready, execute_python_in_docker
-from .workspace import build_download_url, register_generated_paths, uniquify_path
+from .workspace import (
+    build_download_url,
+    _versioned_workspace_transfer_url,
+    is_internal_workspace_path,
+    register_generated_paths,
+    uniquify_path,
+)
 from ..settings import IMAGE_EXTENSIONS, settings
 
 
@@ -17,6 +26,7 @@ def execute_code_safe(
     workspace_dir: str,
     session_id: str = "default",
     timeout_sec: int | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> str:
     timeout_sec = timeout_sec or settings.execution_timeout_sec
     exec_cwd = os.path.abspath(workspace_dir)
@@ -31,26 +41,63 @@ def execute_code_safe(
             file.write(code_str)
 
         if settings.use_docker_execution:
-            return execute_python_in_docker(tmp_path, exec_cwd, timeout_sec, session_id)
+            return execute_python_in_docker(
+                tmp_path,
+                exec_cwd,
+                timeout_sec,
+                session_id,
+                cancel_event,
+            )
+
+        if not settings.allow_unsafe_local_execution:
+            return (
+                "[Error]: local execution is disabled; use Docker or explicitly set "
+                "DEEPANALYZE_ALLOW_UNSAFE_LOCAL_EXECUTION=true for development"
+            )
 
         child_env = os.environ.copy()
         child_env.setdefault("MPLBACKEND", "Agg")
         child_env.setdefault("QT_QPA_PLATFORM", "offscreen")
         child_env.pop("DISPLAY", None)
 
-        completed = subprocess.run(
+        popen_kwargs: dict = {}
+        if os.name == "nt":
+            popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            popen_kwargs["start_new_session"] = True
+
+        process = subprocess.Popen(
             [sys.executable, tmp_path],
             cwd=exec_cwd,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=timeout_sec,
             env=child_env,
+            **popen_kwargs,
         )
-        return (completed.stdout or "") + (completed.stderr or "")
-    except subprocess.TimeoutExpired:
-        return f"[Timeout]: execution exceeded {timeout_sec} seconds"
+        deadline = time.monotonic() + timeout_sec
+        while True:
+            try:
+                stdout, stderr = process.communicate(timeout=0.2)
+                break
+            except subprocess.TimeoutExpired:
+                cancelled = cancel_event is not None and cancel_event.is_set()
+                timed_out = time.monotonic() >= deadline
+                if not cancelled and not timed_out:
+                    continue
+                _terminate_process_tree(process)
+                if cancelled:
+                    return "[Cancelled]: execution stopped by user"
+                return f"[Timeout]: execution exceeded {timeout_sec} seconds"
+
+        output = (stdout or "") + (stderr or "")
+        if process.returncode:
+            details = output.strip()
+            suffix = f"\n{details}" if details else ""
+            return f"[Error]: process exited with code {process.returncode}{suffix}"
+        return output
     except Exception as exc:
         return f"[Error]: {exc}"
     finally:
@@ -61,12 +108,38 @@ def execute_code_safe(
                 pass
 
 
+def _terminate_process_tree(process: subprocess.Popen[str]) -> None:
+    if process.poll() is not None:
+        return
+    try:
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                check=False,
+                capture_output=True,
+                timeout=5,
+            )
+        else:
+            os.killpg(process.pid, signal.SIGTERM)
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGKILL)
+    except Exception:
+        process.kill()
+    finally:
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            process.kill()
+
+
 def snapshot_workspace_files(workspace_dir: str) -> dict[Path, tuple[int, int]]:
     try:
         return {
             path.resolve(): (path.stat().st_size, path.stat().st_mtime_ns)
             for path in Path(workspace_dir).rglob("*")
-            if path.is_file()
+            if path.is_file() and not is_internal_workspace_path(path, Path(workspace_dir))
         }
     except Exception:
         return {}
@@ -137,7 +210,9 @@ def build_file_block(
         except Exception:
             rel_path = path.name
 
-        url = build_download_url(f"{session_id}/{rel_path}")
+        url = _versioned_workspace_transfer_url(
+            build_download_url(f"{session_id}/{rel_path}"), path
+        )
         name = path.name
         lines.append(f"- [{name}]({url})")
         if path.suffix.lower() in IMAGE_EXTENSIONS:

@@ -4,13 +4,13 @@ setlocal
 echo Stopping AI Chat System
 echo =======================
 
-set BACKEND_PORT_1=8100
-set BACKEND_PORT_2=8200
-set FRONTEND_PORT=4000
+for /f "delims=" %%a in ('python -c "from backend_app.settings import settings; print(settings.http_server_port)"') do set "FILE_SERVER_PORT=%%a"
+for /f "delims=" %%a in ('python -c "from backend_app.settings import settings; print(settings.backend_port)"') do set "BACKEND_PORT=%%a"
+for /f "delims=" %%a in ('python -c "from backend_app.settings import settings; print(settings.frontend_port)"') do set "FRONTEND_PORT=%%a"
 
 echo Releasing ports...
-call :KillPort %BACKEND_PORT_1%
-call :KillPort %BACKEND_PORT_2%
+call :KillPort %FILE_SERVER_PORT%
+call :KillPort %BACKEND_PORT%
 call :KillPort %FRONTEND_PORT%
 
 echo.
@@ -18,8 +18,8 @@ echo Cleaning up remaining processes...
 :: Kill by image name as a fallback
 taskkill /F /IM "python.exe" /FI "WINDOWTITLE eq DeepAnalyze Backend*" >nul 2>&1
 taskkill /F /IM "node.exe" >nul 2>&1
-:: Note: Killing all node.exe might be aggressive if user has other node projects running. 
-:: But filtering by command line arguments is hard in batch. 
+:: Note: Killing all node.exe might be aggressive if user has other node projects running.
+:: But filtering by command line arguments is hard in batch.
 :: The port killing above is the safest method. This is just cleanup.
 
 echo.

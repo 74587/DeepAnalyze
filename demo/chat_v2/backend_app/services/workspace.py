@@ -6,9 +6,10 @@ import shutil
 import sqlite3
 import tempfile
 import zipfile
-from pathlib import Path
+from contextlib import closing
+from pathlib import Path, PurePosixPath
 from typing import Iterable, Sequence
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlparse
 
 import httpx
 import pandas as pd
@@ -17,14 +18,49 @@ from fastapi.responses import FileResponse, Response
 from starlette.background import BackgroundTask
 
 from ..settings import PREVIEWABLE_EXTENSIONS, settings
+from .sample_catalog import (
+    get_sample_dataset,
+    list_sample_datasets,
+    resolve_sample_files,
+)
 
 
 GENERATED_INDEX_FILENAME = ".deepanalyze_generated.json"
+INTERNAL_WORKSPACE_DIRNAME = ".deepanalyze"
+SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,95}$")
+WINDOWS_RESERVED_NAMES = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{index}" for index in range(1, 10)),
+    *(f"LPT{index}" for index in range(1, 10)),
+}
+
+
+def validate_session_id(session_id: str | None) -> str:
+    normalized = str(session_id or "default").strip() or "default"
+    if (
+        normalized in {".", ".."}
+        or not SESSION_ID_PATTERN.fullmatch(normalized)
+        or normalized.endswith(".")
+    ):
+        raise HTTPException(status_code=400, detail="Invalid session_id")
+    return normalized
+
+
+def _workspace_base() -> Path:
+    base = Path(settings.workspace_base_dir).resolve()
+    base.mkdir(parents=True, exist_ok=True)
+    return base
 
 
 def get_session_workspace(session_id: str) -> str:
-    safe_session_id = (session_id or "default").strip() or "default"
-    session_dir = Path(settings.workspace_base_dir) / safe_session_id
+    safe_session_id = validate_session_id(session_id)
+    workspace_base = _workspace_base()
+    session_dir = (workspace_base / safe_session_id).resolve()
+    if session_dir.parent != workspace_base:
+        raise HTTPException(status_code=400, detail="Invalid session workspace")
     session_dir.mkdir(parents=True, exist_ok=True)
     return str(session_dir)
 
@@ -49,6 +85,15 @@ def _build_workspace_transfer_url(rel_path: str, *, download: bool) -> str:
     return f"/workspace/download?{urlencode(params, quote_via=quote)}"
 
 
+def _versioned_workspace_transfer_url(url: str, file_path: Path) -> str:
+    """为同名文件覆盖生成新的资源 URL，避免浏览器复用旧缓存。"""
+    try:
+        version = file_path.stat().st_mtime_ns
+    except OSError:
+        version = 0
+    return f"{url}{'&' if '?' in url else '?'}v={version}"
+
+
 def build_download_url(rel_path: str) -> str:
     return _build_workspace_transfer_url(rel_path, download=True)
 
@@ -62,7 +107,13 @@ def _generated_index_path(workspace_root: Path) -> Path:
 
 
 def _normalize_generated_rel_path(path: str) -> str:
-    return str(path or "").replace("\\", "/").lstrip("./")
+    raw = str(path or "").replace("\\", "/").strip()
+    if not raw or raw.startswith("/"):
+        return ""
+    candidate = PurePosixPath(raw)
+    if any(part in {"", ".", ".."} for part in candidate.parts):
+        return ""
+    return candidate.as_posix()
 
 
 def load_generated_index(session_id: str) -> set[str]:
@@ -341,7 +392,7 @@ def preview_workspace_file(
     table_name: str = "",
     sheet_name: str = "",
 ) -> dict:
-    file_path = resolve_workspace_path(session_id, relative_path)
+    file_path = resolve_user_workspace_path(session_id, relative_path)
     if not file_path.exists() or not file_path.is_file():
         raise HTTPException(status_code=404, detail="File not found")
 
@@ -393,7 +444,10 @@ def preview_workspace_file(
         )
 
     if ext in SQLITE_PREVIEW_EXTENSIONS:
-        with sqlite3.connect(file_path) as connection:
+        # sqlite3's context manager only manages transactions, not the
+        # connection: use closing() so previews don't leak file handles
+        # (which also blocks deleting the .db file on Windows).
+        with closing(sqlite3.connect(file_path)) as connection:
             cursor = connection.cursor()
             table_names = [
                 row[0]
@@ -463,7 +517,7 @@ def get_workspace_file_response(
     *,
     download: bool = False,
 ) -> FileResponse:
-    file_path = resolve_workspace_path(session_id, relative_path)
+    file_path = resolve_user_workspace_path(session_id, relative_path)
     if not file_path.exists() or not file_path.is_file():
         raise HTTPException(status_code=404, detail="File not found")
 
@@ -513,8 +567,25 @@ def resolve_workspace_path(session_id: str, relative_path: str = "") -> Path:
     return target
 
 
-def _is_internal_workspace_file(path: Path) -> bool:
-    return path.name == GENERATED_INDEX_FILENAME
+def resolve_user_workspace_path(session_id: str, relative_path: str = "") -> Path:
+    workspace_root = resolve_workspace_root(session_id)
+    target = resolve_workspace_path(session_id, relative_path)
+    if target != workspace_root and is_internal_workspace_path(target, workspace_root):
+        raise HTTPException(status_code=400, detail="Internal workspace path is not accessible")
+    return target
+
+
+def is_internal_workspace_path(path: Path, workspace_root: Path | None = None) -> bool:
+    candidate = path
+    if workspace_root is not None:
+        try:
+            candidate = path.resolve().relative_to(workspace_root.resolve())
+        except (OSError, ValueError):
+            return True
+    return (
+        path.name == GENERATED_INDEX_FILENAME
+        or INTERNAL_WORKSPACE_DIRNAME in candidate.parts
+    )
 
 
 def _is_generated_workspace_path(rel_path: str, generated_index: set[str]) -> bool:
@@ -529,7 +600,7 @@ def list_workspace_files(session_id: str) -> list[dict]:
     all_files = [
         path
         for path in workspace_root.rglob("*")
-        if path.is_file() and not _is_internal_workspace_file(path)
+        if path.is_file() and not is_internal_workspace_path(path, workspace_root)
     ]
     for file_path in sorted(all_files, key=lambda path: _rel_path(path, workspace_root).lower()):
         rel = _rel_path(file_path, workspace_root)
@@ -539,13 +610,14 @@ def list_workspace_files(session_id: str) -> list[dict]:
                 "name": file_path.name,
                 "path": rel,
                 "size": file_path.stat().st_size,
+                "modified_at_ns": file_path.stat().st_mtime_ns,
                 "extension": file_path.suffix.lower(),
                 "icon": get_file_icon(file_path.suffix),
                 "category": classify_file_type(file_path),
                 "is_generated": _is_generated_workspace_path(rel, generated_index),
-                "download_url": build_download_url(rel_path),
+                "download_url": _versioned_workspace_transfer_url(build_download_url(rel_path), file_path),
                 "preview_url": (
-                    build_preview_url(rel_path)
+                    _versioned_workspace_transfer_url(build_preview_url(rel_path), file_path)
                     if file_path.suffix.lower() in PREVIEWABLE_EXTENSIONS
                     else None
                 ),
@@ -567,7 +639,7 @@ def download_generated_bundle(session_id: str, category: str = "all") -> FileRes
     files = [
         path
         for path in generated_root.rglob("*")
-        if path.is_file() and not _is_internal_workspace_file(path)
+        if path.is_file() and not is_internal_workspace_path(path, workspace_root)
     ]
     if normalized_category != "all":
         files = [
@@ -636,24 +708,29 @@ def build_tree(
         node["children"] = [
             build_tree(child, root, session_id, generated_index)
             for child in sorted(path.iterdir(), key=sort_key)
-            if not child.name.startswith(".") and not _is_internal_workspace_file(child)
+            if not child.name.startswith(".") and not is_internal_workspace_path(child, root)
         ]
         node["is_generated"] = node["path"] == "generated" or node["path"].startswith("generated/")
         return node
 
     rel = _rel_path(path, root)
     node["size"] = path.stat().st_size
+    node["modified_at_ns"] = path.stat().st_mtime_ns
     node["extension"] = path.suffix.lower()
     node["icon"] = get_file_icon(path.suffix)
     node["is_generated"] = _is_generated_workspace_path(rel, generated_index)
-    node["download_url"] = build_download_url(f"{session_id}/{rel}")
+    node["download_url"] = _versioned_workspace_transfer_url(
+        build_download_url(f"{session_id}/{rel}"), path
+    )
     if path.suffix.lower() in PREVIEWABLE_EXTENSIONS:
-        node["preview_url"] = build_preview_url(f"{session_id}/{rel}")
+        node["preview_url"] = _versioned_workspace_transfer_url(
+            build_preview_url(f"{session_id}/{rel}"), path
+        )
     return node
 
 
 def delete_workspace_file(session_id: str, relative_path: str) -> dict:
-    target = resolve_workspace_path(session_id, relative_path)
+    target = resolve_user_workspace_path(session_id, relative_path)
     if not target.exists():
         raise HTTPException(status_code=404, detail="Not found")
     if target.is_dir():
@@ -663,11 +740,11 @@ def delete_workspace_file(session_id: str, relative_path: str) -> dict:
 
 
 def move_workspace_path(session_id: str, src: str, dst_dir: str = "") -> dict:
-    source = resolve_workspace_path(session_id, src)
+    source = resolve_user_workspace_path(session_id, src)
     if not source.exists():
         raise HTTPException(status_code=404, detail="Source not found")
 
-    target_dir = resolve_workspace_path(session_id, dst_dir)
+    target_dir = resolve_user_workspace_path(session_id, dst_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
     target = uniquify_path(target_dir / source.name)
     shutil.move(str(source), str(target))
@@ -679,7 +756,7 @@ def move_workspace_path(session_id: str, src: str, dst_dir: str = "") -> dict:
 
 def delete_workspace_dir(session_id: str, relative_path: str, recursive: bool = True) -> dict:
     workspace_root = resolve_workspace_root(session_id)
-    target = resolve_workspace_path(session_id, relative_path)
+    target = resolve_user_workspace_path(session_id, relative_path)
     if target == workspace_root:
         raise HTTPException(status_code=400, detail="Cannot delete workspace root")
     if not target.exists():
@@ -693,18 +770,44 @@ def delete_workspace_dir(session_id: str, relative_path: str, recursive: bool = 
     return {"message": "deleted"}
 
 
+_PROXY_MAX_BYTES = 10 * 1024 * 1024
+
+
 async def proxy_external_file(url: str) -> Response:
+    # Off by default: an open proxy is an SSRF hole (internal endpoints,
+    # cloud metadata services). Enable only via DEEPANALYZE_ENABLE_EXTERNAL_PROXY.
+    if not settings.enable_external_proxy:
+        raise HTTPException(status_code=403, detail="External proxy is disabled")
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
+        raise HTTPException(status_code=400, detail="Only http/https URLs are allowed")
     try:
         async with httpx.AsyncClient(follow_redirects=True, timeout=15) as client:
-            response = await client.get(url)
+            async with client.stream("GET", url) as response:
+                chunks: list[bytes] = []
+                total = 0
+                async for chunk in response.aiter_bytes():
+                    total += len(chunk)
+                    if total > _PROXY_MAX_BYTES:
+                        raise HTTPException(
+                            status_code=502, detail="Proxied file too large"
+                        )
+                    chunks.append(chunk)
+                content = b"".join(chunks)
+                media_type = response.headers.get(
+                    "content-type", "application/octet-stream"
+                )
+                status_code = response.status_code
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Proxy fetch failed: {exc}") from exc
 
     return Response(
-        content=response.content,
-        media_type=response.headers.get("content-type", "application/octet-stream"),
+        content=content,
+        media_type=media_type,
         headers={"Access-Control-Allow-Origin": "*"},
-        status_code=response.status_code,
+        status_code=status_code,
     )
 
 
@@ -713,22 +816,73 @@ async def _save_uploads(
     target_dir: Path,
     files: Iterable[UploadFile],
 ) -> tuple[list[dict], list[str]]:
+    def workspace_usage() -> tuple[int, int]:
+        existing_files = [
+            path
+            for path in workspace_root.rglob("*")
+            if path.is_file() and not is_internal_workspace_path(path, workspace_root)
+        ]
+        return len(existing_files), sum(path.stat().st_size for path in existing_files)
+
+    def safe_upload_filename(raw_name: str | None) -> str:
+        raw = str(raw_name or "untitled").strip()
+        normalized = raw.replace("\\", "/")
+        name = PurePosixPath(normalized).name
+        stem_upper = Path(name).stem.upper()
+        if (
+            not name
+            or name in {".", ".."}
+            or normalized != name
+            or name.endswith((" ", "."))
+            or stem_upper in WINDOWS_RESERVED_NAMES
+            or re.search(r'[<>:"/\\|?*\x00-\x1f]', name)
+        ):
+            raise HTTPException(status_code=400, detail="Invalid upload filename")
+        return name
+
     saved: list[dict] = []
     rejected: list[str] = []
+    file_count, workspace_bytes = workspace_usage()
     for file in files:
-        filename = file.filename or "untitled"
+        filename = safe_upload_filename(file.filename)
         ext = Path(filename).suffix.lower()
         if ext in BLOCKED_UPLOAD_EXTENSIONS:
             rejected.append(filename)
             continue
+        if file_count >= settings.workspace_max_files:
+            raise HTTPException(status_code=413, detail="Workspace file count limit exceeded")
+
         dst = uniquify_path(target_dir / filename)
-        content = await file.read()
-        with open(dst, "wb") as buffer:
-            buffer.write(content)
+        temp_file = tempfile.NamedTemporaryFile(
+            prefix=".deepanalyze-upload-",
+            suffix=".tmp",
+            dir=target_dir,
+            delete=False,
+        )
+        temp_path = Path(temp_file.name)
+        uploaded_bytes = 0
+        try:
+            with temp_file:
+                while True:
+                    chunk = await file.read(settings.upload_chunk_bytes)
+                    if not chunk:
+                        break
+                    uploaded_bytes += len(chunk)
+                    if uploaded_bytes > settings.upload_max_file_bytes:
+                        raise HTTPException(status_code=413, detail="Upload file size limit exceeded")
+                    if workspace_bytes + uploaded_bytes > settings.workspace_max_bytes:
+                        raise HTTPException(status_code=413, detail="Workspace size limit exceeded")
+                    temp_file.write(chunk)
+            temp_path.replace(dst)
+        finally:
+            temp_path.unlink(missing_ok=True)
+
+        file_count += 1
+        workspace_bytes += uploaded_bytes
         saved.append(
             {
                 "name": dst.name,
-                "size": len(content),
+                "size": uploaded_bytes,
                 "path": dst.relative_to(workspace_root).as_posix(),
             }
         )
@@ -745,9 +899,91 @@ async def upload_files_to_workspace(session_id: str, files: Iterable[UploadFile]
     }
 
 
+def get_sample_catalog() -> dict:
+    return {"datasets": list_sample_datasets()}
+
+
+def create_sample_data(
+    session_id: str,
+    sample_id: str,
+    *,
+    clear_existing: bool = False,
+) -> dict:
+    """Copy a cataloged public dataset into the current session workspace."""
+    dataset = get_sample_dataset(sample_id)
+    sources = resolve_sample_files(dataset)
+    workspace_root = resolve_workspace_root(session_id)
+
+    if clear_existing:
+        source_sizes = [source.stat().st_size for source in sources]
+        if any(size > settings.upload_max_file_bytes for size in source_sizes):
+            raise HTTPException(status_code=413, detail="Sample file size limit exceeded")
+        if len(sources) > settings.workspace_max_files:
+            raise HTTPException(status_code=413, detail="Workspace file count limit exceeded")
+        if sum(source_sizes) > settings.workspace_max_bytes:
+            raise HTTPException(status_code=413, detail="Workspace size limit exceeded")
+        clear_workspace(session_id)
+
+    existing_files = [
+        path
+        for path in workspace_root.rglob("*")
+        if path.is_file() and not is_internal_workspace_path(path, workspace_root)
+    ]
+    file_count = len(existing_files)
+    workspace_bytes = sum(path.stat().st_size for path in existing_files)
+    loaded_paths: list[str] = []
+
+    for source in sources:
+        source_size = source.stat().st_size
+        if source_size > settings.upload_max_file_bytes:
+            raise HTTPException(status_code=413, detail="Sample file size limit exceeded")
+
+        target = workspace_root / source.name
+        numbered_name = re.compile(
+            rf"^{re.escape(source.stem)} \(\d+\){re.escape(source.suffix)}$"
+        )
+        reusable_targets = [
+            path
+            for path in workspace_root.iterdir()
+            if path.is_file()
+            and (path.name == source.name or numbered_name.fullmatch(path.name))
+        ]
+        reused = next(
+            (
+                path
+                for path in reusable_targets
+                if path.stat().st_size == source_size
+                and path.read_bytes() == source.read_bytes()
+            ),
+            None,
+        )
+        if reused is not None:
+            loaded_paths.append(reused.relative_to(workspace_root).as_posix())
+            continue
+        target = uniquify_path(target)
+
+        if file_count >= settings.workspace_max_files:
+            raise HTTPException(status_code=413, detail="Workspace file count limit exceeded")
+        if workspace_bytes + source_size > settings.workspace_max_bytes:
+            raise HTTPException(status_code=413, detail="Workspace size limit exceeded")
+
+        shutil.copy2(source, target)
+        file_count += 1
+        workspace_bytes += source_size
+        loaded_paths.append(target.relative_to(workspace_root).as_posix())
+
+    files_by_path = {item["path"]: item for item in list_workspace_files(session_id)}
+    return {
+        "message": "Sample data is ready",
+        "sample_id": dataset["id"],
+        "workspace_cleared": clear_existing,
+        "files": [files_by_path[path] for path in loaded_paths],
+    }
+
+
 async def upload_files_to_dir(session_id: str, directory: str, files: Iterable[UploadFile]) -> dict:
     workspace_root = resolve_workspace_root(session_id)
-    target_dir = resolve_workspace_path(session_id, directory)
+    target_dir = resolve_user_workspace_path(session_id, directory)
     target_dir.mkdir(parents=True, exist_ok=True)
     saved, rejected = await _save_uploads(workspace_root, target_dir, files)
     return {"message": f"uploaded {len(saved)}", "files": saved, "rejected": rejected}
@@ -755,7 +991,11 @@ async def upload_files_to_dir(session_id: str, directory: str, files: Iterable[U
 
 def clear_workspace(session_id: str) -> dict:
     workspace_root = resolve_workspace_root(session_id)
-    if workspace_root.exists():
-        shutil.rmtree(workspace_root)
-    workspace_root.mkdir(parents=True, exist_ok=True)
+    for child in workspace_root.iterdir():
+        if child.name == INTERNAL_WORKSPACE_DIRNAME:
+            continue
+        if child.is_dir():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
     return {"message": "Workspace cleared successfully"}

@@ -8,14 +8,15 @@ echo ==========================
 :: Ensure logs directory exists
 if not exist logs mkdir logs
 
-:: Define ports
-set BACKEND_PORT_1=8100
-set BACKEND_PORT_2=8200
-set FRONTEND_PORT=4000
+:: Resolve ports through the same .env loader used by the backend.
+for /f "delims=" %%a in ('python -c "from backend_app.settings import settings; print(settings.http_server_port)"') do set "FILE_SERVER_PORT=%%a"
+for /f "delims=" %%a in ('python -c "from backend_app.settings import settings; print(settings.backend_port)"') do set "BACKEND_PORT=%%a"
+for /f "delims=" %%a in ('python -c "from backend_app.settings import settings; print(settings.frontend_port)"') do set "FRONTEND_PORT=%%a"
+if not defined NEXT_PUBLIC_BACKEND_URL set "NEXT_PUBLIC_BACKEND_URL=http://localhost:%BACKEND_PORT%"
 
 :: Check and kill ports
-call :KillPort %BACKEND_PORT_1%
-call :KillPort %BACKEND_PORT_2%
+call :KillPort %FILE_SERVER_PORT%
+call :KillPort %BACKEND_PORT%
 call :KillPort %FRONTEND_PORT%
 
 echo Cleaning old processes...
@@ -31,8 +32,8 @@ start /B "DeepAnalyze Backend" cmd /c "python backend.py > logs\backend.log 2>&1
 :: Windows doesn't easily give us the PID of the started background process without external tools or complex PowerShell.
 :: We will rely on port checking or tasklist if needed, but for now simple start is fine.
 echo Backend started in background.
-echo API running on: http://localhost:8200
-echo File service running on: http://localhost:8100
+echo API running on: http://localhost:%BACKEND_PORT%
+echo File service running on: http://localhost:%FILE_SERVER_PORT%
 
 :: Wait for backend to initialize
 timeout /t 3 /nobreak >nul
@@ -50,9 +51,9 @@ echo.
 echo All services started successfully.
 echo.
 echo Service URLs:
-echo   Backend API:  http://localhost:8200
+echo   Backend API:  http://localhost:%BACKEND_PORT%
 echo   Frontend:     http://localhost:%FRONTEND_PORT%
-echo   File Service: http://localhost:8100
+echo   File Service: http://localhost:%FILE_SERVER_PORT%
 echo.
 echo Log files:
 echo   Backend: logs\backend.log

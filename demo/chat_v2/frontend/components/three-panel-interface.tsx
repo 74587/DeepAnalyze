@@ -12,10 +12,23 @@ import { configureMonaco } from "@/lib/monaco-config";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { Switch } from "@/components/ui/switch";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Select,
@@ -35,9 +48,34 @@ import {
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { API_URLS, API_CONFIG, buildApiUrlWithParams } from "@/lib/config";
+import { buildLineDiff } from "@/lib/code-ai-edit";
+import {
+  buildSessionStorageKey,
+  getActiveAnalysisAssistantMessageIndexes,
+  isAwaitingManualContinuation,
+  normalizeSessionMessages,
+  normalizeInteractionMode,
+  serializeSessionMessages,
+  toServerMessages,
+  toggleSelectedPath,
+} from "@/lib/session-state";
+import {
+  countWorkspaceFiles,
+  filterPythonFileLinks,
+  filterWorkspaceFiles,
+  isGeneratedWorkspaceFile,
+  isPythonWorkspaceFile,
+  normalizeWorkspacePath,
+} from "@/lib/workspace-files";
+import {
+  findSampleSelection,
+  normalizeSampleCatalog,
+} from "@/lib/sample-catalog";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
@@ -57,7 +95,7 @@ import {
   Send,
   Sparkles,
   User,
-  Paperclip,
+  Plus,
   X,
   FileText,
   ImageIcon,
@@ -88,6 +126,10 @@ import {
   FileCode2,
   FileJson,
   ChevronLeft,
+  Database,
+  Hand,
+  CirclePause,
+  Settings2,
 } from "lucide-react";
 import { Tree, NodeApi } from "react-arborist";
 import { useToast } from "@/hooks/use-toast";
@@ -103,11 +145,6 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
-import {
-  DATA_ANALYSIS_PROMPT_PRESETS,
-  DEFAULT_SYSTEM_PROMPT,
-  type UILanguage,
-} from "@/lib/prompt-presets";
 
 interface Message {
   id: string;
@@ -117,6 +154,11 @@ interface Message {
   attachments?: FileAttachment[];
   localOnly?: boolean;
 }
+
+const getWelcomeMessage = (language: UILanguage) =>
+  language === "zh"
+    ? "你好，我是 DeepAnalyze-8B。加载示例数据或上传你的文件，然后直接描述想要得到的分析结论。"
+    : "Hi, I'm DeepAnalyze-8B. Load the sample data or upload your files, then describe the analysis outcome you need.";
 
 interface FileAttachment {
   id: string;
@@ -130,12 +172,33 @@ interface WorkspaceFile {
   name: string;
   path: string;
   size: number;
+  modified_at_ns?: number;
   extension: string;
   icon: string;
   category?: "table" | "image" | "other";
   is_generated?: boolean;
   download_url: string;
   preview_url?: string;
+}
+
+interface LocalizedText {
+  zh: string;
+  en: string;
+}
+
+interface SampleQuestion {
+  id: string;
+  title: LocalizedText;
+  prompt: LocalizedText;
+}
+
+interface SampleDataset {
+  id: string;
+  kind: "single_file" | "multi_file";
+  title: LocalizedText;
+  description: LocalizedText;
+  files: string[];
+  questions: SampleQuestion[];
 }
 
 interface PreviewTableData {
@@ -198,13 +261,47 @@ interface ExportResponsePayload {
   };
 }
 
+interface SessionStatePayload {
+  messages?: Array<{
+    id?: string;
+    role: "user" | "assistant";
+    content: string;
+    timestamp?: string;
+    attachments?: FileAttachment[];
+  }>;
+  task_config?: {
+    selected_files?: string[];
+    provider?: LlmProvider;
+    model?: string;
+    temperature?: number;
+    system_prompt?: string;
+    ui_language?: UILanguage;
+    interaction_mode?: InteractionMode;
+  };
+  interaction_state?: {
+    status?: "idle" | "awaiting_user";
+    paused_at?: string;
+  };
+}
+
+type CodeDiffRow = {
+  id: string;
+  type: "unchanged" | "removed" | "added";
+  oldLineNumber: number | null;
+  newLineNumber: number | null;
+  content: string;
+};
+
 const PREVIEW_TABLE_PAGE_SIZE = 10;
 const BLOCKED_UPLOAD_EXTENSIONS = new Set(["py"]);
 const ACTIVE_SECTION_UPDATE_INTERVAL_MS = 80;
+const SCROLL_BOTTOM_THRESHOLD_PX = 8;
 const STREAMING_SECTION_FIXED_HEIGHT_PX = 140;
 const UPLOAD_ACCEPT_TYPES =
   ".csv,.tsv,.xlsx,.xls,.parquet,.sqlite,.db,.json,.txt,.log,.md,.markdown,.yml,.yaml,.pdf,image/*,.zip";
 type LlmProvider = "local" | "heywhale" | "custom";
+type UILanguage = "en" | "zh";
+type InteractionMode = "auto" | "manual";
 const DEFAULT_MODEL_NAME = "DeepAnalyze-8B";
 const EXECUTE_RESULT_PREFIX = "# Execute Result\n";
 const EXECUTE_RESULT_NOTICE_EN =
@@ -469,21 +566,19 @@ const ChatMessageItem = memo(
               </div>
             </div>
             <Avatar>
-              <AvatarImage src="/placeholder-user.jpg" alt="User" />
               <AvatarFallback className="text-[10px]">U</AvatarFallback>
             </Avatar>
           </div>
         ) : (
           <div className="flex items-start gap-2 min-w-0">
             <Avatar>
-              <AvatarImage src="/placeholder-logo.png" alt="AI Assistant" />
               <AvatarFallback className="text-[10px]">
                 <Sparkles className="h-3 w-3" />
               </AvatarFallback>
             </Avatar>
             <div className="min-w-0 flex-1 message-appear">
               <div className="text-sm font-medium text-gray-600 dark:text-gray-400 mb-2">
-                Assistant
+                DA-Studio
               </div>
               <div className="space-y-4 min-w-0">
                 {isStreaming ? (
@@ -707,6 +802,51 @@ const StreamingSectionViewport = memo(function StreamingSectionViewport({
   );
 });
 
+const COMPOSER_MIN_HEIGHT_PX = 40;
+const COMPOSER_MAX_HEIGHT_PX = 160;
+
+function AutoGrowingTextarea({
+  onChange,
+  value,
+  ...props
+}: Omit<React.ComponentProps<typeof Textarea>, "ref">) {
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const resizeTextarea = useCallback((textarea: HTMLTextAreaElement) => {
+    if (!textarea.value) {
+      textarea.style.height = `${COMPOSER_MIN_HEIGHT_PX}px`;
+      textarea.style.overflowY = "hidden";
+      return;
+    }
+
+    textarea.style.height = "0px";
+    const nextHeight = Math.min(
+      Math.max(textarea.scrollHeight, COMPOSER_MIN_HEIGHT_PX),
+      COMPOSER_MAX_HEIGHT_PX
+    );
+    textarea.style.height = `${nextHeight}px`;
+    textarea.style.overflowY =
+      textarea.scrollHeight > COMPOSER_MAX_HEIGHT_PX ? "auto" : "hidden";
+  }, []);
+
+  useEffect(() => {
+    if (textareaRef.current) resizeTextarea(textareaRef.current);
+  }, [resizeTextarea, value]);
+
+  return (
+    <Textarea
+      {...props}
+      ref={textareaRef}
+      rows={1}
+      value={value}
+      onChange={(event) => {
+        resizeTextarea(event.currentTarget);
+        onChange?.(event);
+      }}
+    />
+  );
+}
+
 export function ThreePanelInterface() {
   const { toast } = useToast();
   const [isDarkMode, setIsDarkMode] = useState(false); // 服务端默认 false
@@ -772,9 +912,16 @@ export function ThreePanelInterface() {
         setUiLanguage(savedLanguage);
       }
 
-      const savedSystemPrompt = localStorage.getItem("deepanalyze.systemPrompt");
-      if (savedSystemPrompt) {
-        setSystemPrompt(savedSystemPrompt);
+      setInteractionMode(
+        normalizeInteractionMode(
+          localStorage.getItem("deepanalyze.interactionMode")
+        )
+      );
+
+      const savedRequirements =
+        localStorage.getItem("deepanalyze.systemPrompt");
+      if (savedRequirements) {
+        setSystemPrompt(savedRequirements);
       }
 
       const savedProvider = localStorage.getItem("deepanalyze.llmProvider");
@@ -813,13 +960,6 @@ export function ThreePanelInterface() {
         setCustomApiKey(savedCustomApiKey);
       }
 
-      const savedPresetId = localStorage.getItem("deepanalyze.selectedPresetId");
-      if (
-        savedPresetId &&
-        DATA_ANALYSIS_PROMPT_PRESETS.some((item) => item.id === savedPresetId)
-      ) {
-        setSelectedPresetId(savedPresetId);
-      }
     }
   }, []);
 
@@ -988,7 +1128,7 @@ export function ThreePanelInterface() {
   const [messages, setMessages] = useState<Message[]>([
     {
       id: "welcome-1",
-      content: "Hello! I'm DeepAnalyze-8B, your autonomous data science assistant. Upload your data and let's explore it together!",
+      content: getWelcomeMessage("en"),
       sender: "ai",
       timestamp: new Date(),
       localOnly: true,
@@ -999,6 +1139,10 @@ export function ThreePanelInterface() {
   const [isStopping, setIsStopping] = useState(false);
   const [attachments, setAttachments] = useState<FileAttachment[]>([]);
   const [workspaceFiles, setWorkspaceFiles] = useState<WorkspaceFile[]>([]);
+  const workspaceFilesRef = useRef<WorkspaceFile[]>([]);
+  useEffect(() => {
+    workspaceFilesRef.current = workspaceFiles;
+  }, [workspaceFiles]);
   const [workspaceTree, setWorkspaceTree] = useState<WorkspaceNode | null>(
     null
   );
@@ -1009,24 +1153,39 @@ export function ThreePanelInterface() {
   const [showCodeEditor, setShowCodeEditor] = useState(false);
   const [isExecutingCode, setIsExecutingCode] = useState(false);
   const [codeExecutionResult, setCodeExecutionResult] = useState("");
+  const [codeEditInstruction, setCodeEditInstruction] = useState("");
+  const [codeEditorOriginalCode, setCodeEditorOriginalCode] = useState("");
+  const [appliedCodeEdit, setAppliedCodeEdit] = useState<{
+    originalCode: string;
+    instruction: string;
+  } | null>(null);
+  const [isEditingCodeWithAi, setIsEditingCodeWithAi] = useState(false);
+  const [pendingCodeEdit, setPendingCodeEdit] = useState<{
+    originalCode: string;
+    modifiedCode: string;
+    instruction: string;
+    diffRows: CodeDiffRow[];
+  } | null>(null);
   const [workspaceView, setWorkspaceView] = useState<
     "all" | "uploaded" | "generated"
-  >("uploaded");
+  >("generated");
   const [workspaceSearch, setWorkspaceSearch] = useState("");
   const [selectedWorkspacePath, setSelectedWorkspacePath] = useState("");
+  const [selectedAnalysisFiles, setSelectedAnalysisFiles] = useState<Set<string>>(
+    () => new Set()
+  );
+  const fileSelectionInitializedRef = useRef(false);
   const [uiLanguage, setUiLanguage] = useState<UILanguage>("en");
-  const [systemPrompt, setSystemPrompt] = useState(DEFAULT_SYSTEM_PROMPT);
+  const [interactionMode, setInteractionMode] =
+    useState<InteractionMode>("auto");
+  const [manualPaused, setManualPaused] = useState(false);
+  const [systemPrompt, setSystemPrompt] = useState("");
   const [llmProvider, setLlmProvider] = useState<LlmProvider>("local");
   const [customModelName, setCustomModelName] = useState(DEFAULT_MODEL_NAME);
   const [modelTemperature, setModelTemperature] = useState("0.4");
   const [heywhaleApiKey, setHeywhaleApiKey] = useState("");
   const [customApiBase, setCustomApiBase] = useState("");
   const [customApiKey, setCustomApiKey] = useState("");
-  const [selectedPresetId, setSelectedPresetId] = useState(
-    DATA_ANALYSIS_PROMPT_PRESETS[0]?.id || ""
-  );
-
-
   useEffect(() => {
     if (typeof window === "undefined") return;
     localStorage.setItem("deepanalyze.uiLanguage", uiLanguage);
@@ -1034,7 +1193,15 @@ export function ThreePanelInterface() {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    localStorage.setItem("deepanalyze.systemPrompt", systemPrompt);
+    localStorage.setItem("deepanalyze.interactionMode", interactionMode);
+  }, [interactionMode]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    localStorage.setItem(
+      "deepanalyze.systemPrompt",
+      systemPrompt
+    );
   }, [systemPrompt]);
 
   useEffect(() => {
@@ -1067,11 +1234,6 @@ export function ThreePanelInterface() {
     sessionStorage.setItem("deepanalyze.customApiKey", customApiKey);
   }, [customApiKey]);
 
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    localStorage.setItem("deepanalyze.selectedPresetId", selectedPresetId);
-  }, [selectedPresetId]);
-
   // 预览弹窗状态
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
   const [previewTitle, setPreviewTitle] = useState<string>("");
@@ -1088,11 +1250,11 @@ export function ThreePanelInterface() {
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewDownloadUrl, setPreviewDownloadUrl] = useState<string>("");
   const previewScrollRef = useRef<HTMLDivElement>(null);
+  const previewRequestIdRef = useRef(0);
   const [deleteConfirmPath, setDeleteConfirmPath] = useState<string | null>(
     null
   );
   const [deleteIsDir, setDeleteIsDir] = useState<boolean>(false);
-  const fileRefreshTimerRef = useRef<number | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
@@ -1107,21 +1269,35 @@ export function ThreePanelInterface() {
   const [dragOverPath, setDragOverPath] = useState<string | null>(null);
   const [dropActive, setDropActive] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
+  const [isLoadingSample, setIsLoadingSample] = useState(false);
+  const [isSampleDialogOpen, setIsSampleDialogOpen] = useState(false);
+  const [isSampleCatalogLoading, setIsSampleCatalogLoading] = useState(false);
+  const [sampleCatalog, setSampleCatalog] = useState<SampleDataset[]>([]);
+  const [selectedSampleId, setSelectedSampleId] = useState("");
+  const [selectedSampleQuestionId, setSelectedSampleQuestionId] = useState("");
   const [uploadMsg, setUploadMsg] = useState<string>("");
   const [exportingFormat, setExportingFormat] = useState<"md" | "pdf" | null>(
     null
   );
+  const selectedSample = useMemo(
+    () => sampleCatalog.find((dataset) => dataset.id === selectedSampleId) || null,
+    [sampleCatalog, selectedSampleId]
+  );
+  const selectedSampleQuestion = useMemo(
+    () =>
+      selectedSample?.questions.find(
+        (question) => question.id === selectedSampleQuestionId
+      ) || null,
+    [selectedSample, selectedSampleQuestionId]
+  );
 
-  const lastScrollTimeRef = useRef(0);
   const scrollRafRef = useRef<number | null>(null);
   const stickToBottomRef = useRef(true);
   // const aiUpdateTimerRef = useRef<number | null>(null); // Removed in favor of RAF
-  const aiPendingContentRef = useRef<string>("");
-  const aiDisplayedContentRef = useRef<string>("");
-  const streamRafRef = useRef<number | null>(null);
   const streamAbortControllerRef = useRef<AbortController | null>(null);
   const workspaceFilesAbortRef = useRef<AbortController | null>(null);
   const workspaceFilesLoadingRef = useRef(false);
+  const workspaceFilesPendingRefreshRef = useRef(false);
   const lastWorkspaceFilesErrorRef = useRef("");
   const isTypingRef = useRef(false);
   const toastRef = useRef(toast);
@@ -1130,6 +1306,10 @@ export function ThreePanelInterface() {
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(
     null
   );
+  const updateTypingState = useCallback((value: boolean) => {
+    isTypingRef.current = value;
+    setIsTyping(value);
+  }, []);
   // const [clearChatOpen, setClearChatOpen] = useState(false); // Removed redundant state
 
   // 节流滚动到底部
@@ -1146,84 +1326,133 @@ export function ThreePanelInterface() {
     collapsedSectionsRef.current = collapsedSections;
   }, [collapsedSections]);
 
-  const scrollToBottom = useCallback((force: boolean = false) => {
-    const now = Date.now();
-    const timeSinceLastScroll = now - lastScrollTimeRef.current;
-
-    // 节流：默认 100ms，强制模式下忽略
-    if (!force && timeSinceLastScroll < 100) {
-      return;
-    }
+  const scrollToBottom = useCallback(() => {
+    if (!stickToBottomRef.current) return;
 
     if (scrollRafRef.current) {
       cancelAnimationFrame(scrollRafRef.current);
     }
 
     scrollRafRef.current = requestAnimationFrame(() => {
+      if (!stickToBottomRef.current) {
+        scrollRafRef.current = null;
+        return;
+      }
       if (messagesContainerRef.current) {
         const container = messagesContainerRef.current;
         // 使用 behavior: auto (默认) 以确保瞬间跳转，避免 smooth 带来的滞后叠加
         container.scrollTop = container.scrollHeight;
-        stickToBottomRef.current = true;
-        lastScrollTimeRef.current = Date.now();
       }
       scrollRafRef.current = null;
     });
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (scrollRafRef.current) {
+        cancelAnimationFrame(scrollRafRef.current);
+        scrollRafRef.current = null;
+      }
+    };
   }, []);
 
   // 输入完成后平滑滚动到底部（避免流式期间 setInterval 导致频繁布局计算）
   useEffect(() => {
     if (isTyping) return;
     if (!stickToBottomRef.current) return;
-    setTimeout(() => {
-      if (messagesContainerRef.current) {
-        messagesContainerRef.current.scrollTo({
-          top: messagesContainerRef.current.scrollHeight,
-          behavior: "smooth",
-        });
-      }
+    const timeoutId = window.setTimeout(() => {
+      const container = messagesContainerRef.current;
+      if (!container || !stickToBottomRef.current) return;
+      container.scrollTo({
+        top: container.scrollHeight,
+        behavior: "auto",
+      });
     }, 100);
+    return () => window.clearTimeout(timeoutId);
   }, [isTyping]);
 
   // 监听消息变化
   useEffect(() => {
     if (stickToBottomRef.current) {
-      // 流式输出时(streamingMessageId存在)强制滚动，消除滞后
-      scrollToBottom(!!streamingMessageId);
+      // 只有仍在底部时才跟随消息增量滚动。
+      scrollToBottom();
     }
-  }, [messages, scrollToBottom, streamingMessageId]);
+  }, [messages, scrollToBottom]);
 
-  // 聊天消息本地缓存：加载与保存
-  const CHAT_STORAGE_KEY = "chat_messages_v1";
+  // 服务端 session state 是主存储，本地缓存仅用于离线回退。
   const [chatLoaded, setChatLoaded] = useState(false);
 
-  // 挂载后再次从本地覆盖加载，避免 SSR 初始状态覆盖缓存
   useEffect(() => {
-    try {
-      if (typeof window === "undefined") return;
-      const raw = localStorage.getItem(CHAT_STORAGE_KEY);
-      if (raw) {
-        const arr = JSON.parse(raw) as any[];
-        if (Array.isArray(arr) && arr.length) {
-          const restored = arr.map((m) => ({
-            ...m,
-            timestamp: m.timestamp ? new Date(m.timestamp) : new Date(),
-          })) as Message[];
-          setMessages(restored);
+    if (!sessionId || typeof window === "undefined") return;
+    let cancelled = false;
+    setChatLoaded(false);
+    setManualPaused(false);
+
+    const restoreSession = async () => {
+      let restoredMessages: Message[] = [];
+      try {
+        const response = await fetch(
+          `${API_URLS.SESSION_STATE}?session_id=${encodeURIComponent(sessionId)}`
+        );
+        if (response.ok) {
+          const state = (await response.json()) as SessionStatePayload;
+          restoredMessages = normalizeSessionMessages(state.messages || []) as Message[];
+          const task = state.task_config || {};
+          const selectedFiles = Array.isArray(task.selected_files)
+            ? task.selected_files
+            : [];
+          setSelectedAnalysisFiles(new Set(selectedFiles));
+          fileSelectionInitializedRef.current = selectedFiles.length > 0;
+          if (task.provider) setLlmProvider(task.provider);
+          if (task.model) setCustomModelName(task.model);
+          if (typeof task.temperature === "number") {
+            setModelTemperature(String(task.temperature));
+          }
+          if (task.system_prompt) setSystemPrompt(task.system_prompt);
+          if (task.ui_language === "zh" || task.ui_language === "en") {
+            setUiLanguage(task.ui_language);
+          }
+          if (task.interaction_mode) {
+            setInteractionMode(normalizeInteractionMode(task.interaction_mode));
+          }
+          setManualPaused(
+            isAwaitingManualContinuation(state.interaction_state)
+          );
+        }
+      } catch (error) {
+        console.warn("load server session state failed", error);
+      }
+
+      if (!restoredMessages.length) {
+        try {
+          const raw = localStorage.getItem(
+            buildSessionStorageKey(sessionId)
+          );
+          const cached = raw ? (JSON.parse(raw) as any[]) : [];
+          if (Array.isArray(cached)) {
+            restoredMessages = normalizeSessionMessages(cached) as Message[];
+          }
+        } catch (error) {
+          console.warn("load local session cache failed", error);
         }
       }
-    } catch (e) {
-      console.warn("post-mount load chat cache failed", e);
-    }
-    setChatLoaded(true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
-  // 消息本地缓存：流式生成时节流保存，避免每个 chunk 都写 localStorage 导致卡顿
+      if (!cancelled) {
+        if (restoredMessages.length) setMessages(restoredMessages);
+        setChatLoaded(true);
+      }
+    };
+
+    void restoreSession();
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId]);
+
   const saveChatTimerRef = useRef<number | null>(null);
   useEffect(() => {
     try {
-      if (!chatLoaded) return; // 避免首屏用欢迎消息覆盖已有缓存
+      if (!chatLoaded || !sessionId) return;
       if (typeof window === "undefined") return;
 
       if (saveChatTimerRef.current) {
@@ -1234,16 +1463,17 @@ export function ThreePanelInterface() {
       const delay = isTyping ? 1500 : 200;
       saveChatTimerRef.current = window.setTimeout(() => {
         try {
-          const data = JSON.stringify(
-            messages.map((m) => ({
-              ...m,
-              timestamp: (m.timestamp instanceof Date
-                ? m.timestamp
-                : new Date(m.timestamp as any)
-              ).toISOString(),
-            }))
-          );
-          localStorage.setItem(CHAT_STORAGE_KEY, data);
+          const data = JSON.stringify(serializeSessionMessages(messages));
+          localStorage.setItem(buildSessionStorageKey(sessionId), data);
+          const persistedMessages = toServerMessages(messages);
+          void fetch(API_URLS.SESSION_MESSAGES, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              session_id: sessionId,
+              messages: persistedMessages,
+            }),
+          }).catch((error) => console.warn("save server session failed", error));
         } catch (e) {
           console.warn("save chat cache failed", e);
         } finally {
@@ -1253,7 +1483,18 @@ export function ThreePanelInterface() {
     } catch (e) {
       console.warn("save chat cache failed", e);
     }
-  }, [messages, chatLoaded, isTyping]);
+  }, [messages, chatLoaded, isTyping, sessionId]);
+
+  const discardPendingContinuation = useCallback(() => {
+    setManualPaused(false);
+    if (!sessionId) return;
+    void fetch(
+      buildApiUrlWithParams(API_CONFIG.ENDPOINTS.SESSION_PENDING, {
+        session_id: sessionId,
+      }),
+      { method: "DELETE" }
+    ).catch((error) => console.warn("clear pending continuation failed", error));
+  }, [sessionId]);
 
   // 一键清空聊天：保留欢迎消息（仅本地显示）
   const clearChat = () => {
@@ -1263,23 +1504,40 @@ export function ThreePanelInterface() {
     }
     const welcome: Message = {
       id: `welcome-${Date.now()}`,
-      content: "Hello! I'm DeepAnalyze-8B, your autonomous data science assistant. Upload your data and let's explore it together!",
+      content: getWelcomeMessage(uiLanguage),
       sender: "ai",
       timestamp: new Date(),
       localOnly: true,
     };
     setMessages([welcome]);
+    discardPendingContinuation();
     try {
       if (typeof window !== "undefined") {
-        localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify([welcome]));
+        localStorage.setItem(
+          buildSessionStorageKey(sessionId),
+          JSON.stringify([welcome])
+        );
       }
     } catch { }
     toast({ description: "已清空聊天" });
   };
 
+  useEffect(() => {
+    setMessages((current) =>
+      current.map((message) =>
+        message.localOnly && message.id.startsWith("welcome-")
+          ? { ...message, content: getWelcomeMessage(uiLanguage) }
+          : message
+      )
+    );
+  }, [uiLanguage]);
+
   const loadWorkspaceFiles = useCallback(async () => {
     if (!sessionId) return;
-    if (workspaceFilesLoadingRef.current) return;
+    if (workspaceFilesLoadingRef.current) {
+      workspaceFilesPendingRefreshRef.current = true;
+      return;
+    }
     const controller = new AbortController();
     workspaceFilesAbortRef.current = controller;
     workspaceFilesLoadingRef.current = true;
@@ -1301,6 +1559,7 @@ export function ThreePanelInterface() {
               (item, index) =>
                 item.path === nextFiles[index]?.path &&
                 item.size === nextFiles[index]?.size &&
+                item.modified_at_ns === nextFiles[index]?.modified_at_ns &&
                 item.download_url === nextFiles[index]?.download_url &&
                 item.is_generated === nextFiles[index]?.is_generated
             )
@@ -1331,6 +1590,10 @@ export function ThreePanelInterface() {
         workspaceFilesAbortRef.current = null;
       }
       workspaceFilesLoadingRef.current = false;
+      if (workspaceFilesPendingRefreshRef.current) {
+        workspaceFilesPendingRefreshRef.current = false;
+        void loadWorkspaceFiles();
+      }
     }
   }, [sessionId]);
 
@@ -1345,13 +1608,14 @@ export function ThreePanelInterface() {
   }, [sessionId, loadWorkspaceFiles]);
 
   useEffect(() => {
+    const intervalMs = isTyping ? 3000 : 10000;
     const id = window.setInterval(() => {
       const isVisible =
         typeof document !== "undefined" && document.visibilityState === "visible";
-      if (!isUploading && !isTyping && isVisible) {
+      if (!isUploading && isVisible) {
         void loadWorkspaceFiles();
       }
-    }, 10000);
+    }, intervalMs);
     return () => window.clearInterval(id);
   }, [isTyping, isUploading, loadWorkspaceFiles]);
 
@@ -1394,8 +1658,8 @@ export function ThreePanelInterface() {
       workspace: uiLanguage === "zh" ? "工作区" : "Workspace",
       workspaceHint:
         uiLanguage === "zh"
-          ? "文件、提示词与分类下载都放在这里"
-          : "Files, prompts, and bundle downloads live here.",
+          ? "上传数据、选择分析文件并管理输出"
+          : "Upload data, choose analysis files, and manage outputs.",
       language: uiLanguage === "zh" ? "系统语言" : "Language",
       uploaded: uiLanguage === "zh" ? "上传文件" : "Uploaded",
       generated: uiLanguage === "zh" ? "生成文件" : "Generated",
@@ -1403,24 +1667,17 @@ export function ThreePanelInterface() {
       search: uiLanguage === "zh" ? "搜索文件名或路径..." : "Search by file name or path...",
       recentPreview: uiLanguage === "zh" ? "最近预览" : "Recent Preview",
       preview: uiLanguage === "zh" ? "预览" : "Preview",
-      promptPresets: uiLanguage === "zh" ? "预设 Prompt" : "Preset Prompt",
-      promptHint:
-        uiLanguage === "zh"
-          ? "切换预设时，输入框会自动同步对应内容"
-          : "Selecting a preset automatically updates the input box.",
       systemPrompt: "System Prompt",
       systemPromptPlaceholder:
         uiLanguage === "zh"
-          ? "可选：在这里填写 system prompt，不填则为空"
-          : "Optional: write a system prompt here, or leave it empty.",
+          ? "可选：追加到固定 System Prompt 后面"
+          : "Optional: appended after the fixed system prompt.",
       bundleDownload:
         uiLanguage === "zh" ? "分类打包下载" : "Bundle Downloads",
       noFiles:
         uiLanguage === "zh"
           ? "当前筛选条件下没有文件"
           : "No files match the current filter.",
-      autoInjected:
-        uiLanguage === "zh" ? "输入框已同步预设内容" : "Input synced with preset prompt",
       tableBundle: uiLanguage === "zh" ? "表格文件" : "Tables",
       imageBundle: uiLanguage === "zh" ? "图片文件" : "Images",
       otherBundle: uiLanguage === "zh" ? "其他文件" : "Others",
@@ -1436,8 +1693,6 @@ export function ThreePanelInterface() {
           : "The center stays focused on chat, streaming analysis, and quick actions.",
       moveDialogToLeft:
         uiLanguage === "zh" ? "对话框移到左栏" : "Move Dialog Left",
-      presetsDescription:
-        uiLanguage === "zh" ? "预设会同步到输入框" : "Presets sync to the input box",
       emptySystemPrompt:
         uiLanguage === "zh" ? "默认留空" : "Default empty",
       modelProvider: uiLanguage === "zh" ? "模型来源" : "Model Provider",
@@ -1538,90 +1793,63 @@ export function ThreePanelInterface() {
         uiLanguage === "zh"
           ? "例如 CSV / XLSX、SQLite / DB、TXT / MD 均可上传。"
           : "Examples: CSV / XLSX, SQLite / DB, TXT / MD .",
+      streamInterrupted:
+        uiLanguage === "zh"
+          ? "⚠️ 与分析后端的连接已中断，你可以重新提交任务。"
+          : "⚠️ Connection to the analysis backend was interrupted. You can resubmit the task.",
+      appTitle: "DA-Studio",
+      appSubtitle:
+        uiLanguage === "zh" ? "由 DeepAnalyze 驱动" : "powered by DeepAnalyze",
     }),
     [uiLanguage]
   );
 
-  const fileStatsTitle = uiLanguage === "zh" ? "文件统计" : "File Stats";
+  const fileStatsTitle = uiLanguage === "zh" ? "生成结果" : "Generated Results";
   const fileStatsHint =
     uiLanguage === "zh"
-      ? "点击卡片可切换左侧文件筛选。"
-      : "Click a card to switch the file filter on the left.";
-
-  const selectedPreset = useMemo(
-    () =>
-      DATA_ANALYSIS_PROMPT_PRESETS.find((item) => item.id === selectedPresetId) ||
-      DATA_ANALYSIS_PROMPT_PRESETS[0],
-    [selectedPresetId]
-  );
-
-  const selectedPresetPrompt = selectedPreset?.prompt[uiLanguage] || "";
-
-  const normalizeWorkspacePath = useCallback((path?: string | null) => {
-    return String(path || "")
-      .replace(/\\/g, "/")
-      .replace(/^\/+/, "")
-      .trim();
-  }, []);
-
-  const isGeneratedPath = useCallback(
-    (path?: string | null) => {
-      const normalized = normalizeWorkspacePath(path);
-      return normalized === "generated" || normalized.startsWith("generated/");
-    },
-    [normalizeWorkspacePath]
-  );
-
-  const isSessionRootFilePath = useCallback(
-    (path?: string | null) => {
-      const normalized = normalizeWorkspacePath(path);
-      return !!normalized && !normalized.includes("/");
-    },
-    [normalizeWorkspacePath]
-  );
-
-  const isGeneratedDirectFilePath = useCallback(
-    (path?: string | null) => {
-      const normalized = normalizeWorkspacePath(path);
-      return /^generated\/[^/]+$/.test(normalized);
-    },
-    [normalizeWorkspacePath]
-  );
-
-  const generatedDirectNameSet = useMemo(() => {
-    const set = new Set<string>();
-    workspaceFiles.forEach((file) => {
-      if (isGeneratedDirectFilePath(file.path)) {
-        set.add(String(file.name || "").toLowerCase());
-      }
-    });
-    return set;
-  }, [isGeneratedDirectFilePath, workspaceFiles]);
+      ? "这里集中展示分析过程生成的表格、图表和报告。"
+      : "Tables, charts, and reports created by the analysis appear here.";
 
   const rightPanelSourceFiles = useMemo(
-    () => workspaceFiles.filter((file) => isSessionRootFilePath(file.path)),
-    [isSessionRootFilePath, workspaceFiles]
+    () =>
+      workspaceFiles.filter((file) => {
+        const normalized = String(file.path || "")
+          .replace(/\\/g, "/")
+          .replace(/^\/+/, "")
+          .trim();
+        return !!normalized && !normalized.includes("/");
+      }),
+    [workspaceFiles]
   );
 
-  const isGeneratedWorkspaceFile = useCallback(
-    (file?: Pick<WorkspaceFile, "path" | "name"> | null) => {
-      if (!file) return false;
-      if (isGeneratedDirectFilePath(file.path)) {
-        return true;
-      }
-      if (!isSessionRootFilePath(file.path)) {
-        return false;
-      }
-      return generatedDirectNameSet.has(String(file.name || "").toLowerCase());
-    },
-    [generatedDirectNameSet, isGeneratedDirectFilePath, isSessionRootFilePath]
-  );
+  useEffect(() => {
+    if (
+      !chatLoaded ||
+      fileSelectionInitializedRef.current ||
+      !rightPanelSourceFiles.length
+    ) {
+      return;
+    }
+    const uploadedPaths = rightPanelSourceFiles
+      .filter((file) => !isGeneratedWorkspaceFile(file))
+      .map((file) => file.path);
+    setSelectedAnalysisFiles(new Set(uploadedPaths));
+    fileSelectionInitializedRef.current = true;
+  }, [chatLoaded, isGeneratedWorkspaceFile, rightPanelSourceFiles]);
+
+  const toggleAnalysisFile = useCallback((path: string, selected: boolean) => {
+    setSelectedAnalysisFiles((current) => {
+      return toggleSelectedPath(current, path, selected);
+    });
+    fileSelectionInitializedRef.current = true;
+  }, []);
 
   const isGeneratedBundleFile = useCallback(
     (file?: Pick<WorkspaceFile, "path"> | null) => {
-      return isGeneratedPath(file?.path);
+      const normalized = normalizeWorkspacePath(file?.path);
+      return normalized === "generated" || normalized.startsWith("generated/");
     },
-    [isGeneratedPath]
+    []
   );
 
   const dedupeGeneratedDisplayFiles = useCallback((files: WorkspaceFile[]) => {
@@ -1651,7 +1879,7 @@ export function ThreePanelInterface() {
     });
 
     return result;
-  }, [isGeneratedBundleFile, isGeneratedWorkspaceFile]);
+  }, [isGeneratedBundleFile]);
 
   const normalizedTemperature = useMemo(() => {
     const parsed = Number.parseFloat(modelTemperature);
@@ -1659,10 +1887,8 @@ export function ThreePanelInterface() {
     return Math.min(2, Math.max(0, parsed));
   }, [modelTemperature]);
 
-  const effectiveSystemPrompt = useMemo(() => {
-    const trimmed = systemPrompt.trim();
-    let mergedPrompt = trimmed;
-
+  const baseSystemPrompt = useMemo(() => {
+    let mergedPrompt = "";
     if (llmProvider === "custom") {
       const customPrefix =
         uiLanguage === "zh"
@@ -1692,16 +1918,66 @@ export function ThreePanelInterface() {
     }
 
     return mergedPrompt;
-  }, [customModelName, llmProvider, systemPrompt, uiLanguage]);
+  }, [customModelName, llmProvider, uiLanguage]);
+
+  const effectiveSystemPrompt = useMemo(() => {
+    const customPrompt = systemPrompt.trim();
+    if (!customPrompt) return baseSystemPrompt;
+    return baseSystemPrompt
+      ? `${baseSystemPrompt}\n\n# User System Prompt\n${customPrompt}`
+      : customPrompt;
+  }, [baseSystemPrompt, systemPrompt]);
+
+  const latestTaskInstruction = useMemo(() => {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      if (
+        messages[index].sender === "user" &&
+        !messages[index].id.startsWith("manual-instruction-")
+      ) {
+        return messages[index].content;
+      }
+    }
+    return inputValue;
+  }, [inputValue, messages]);
 
   useEffect(() => {
-    if (!selectedPresetPrompt) return;
-    setInputValue(selectedPresetPrompt);
-  }, [selectedPresetPrompt]);
+    if (!chatLoaded || !sessionId) return;
+    const timer = window.setTimeout(() => {
+      void fetch(API_URLS.SESSION_TASK, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          session_id: sessionId,
+          task_config: {
+            instruction: latestTaskInstruction,
+            selected_files: Array.from(selectedAnalysisFiles),
+            provider: llmProvider,
+            model: llmProvider === "custom" ? customModelName : DEFAULT_MODEL_NAME,
+            temperature: normalizedTemperature,
+            system_prompt: systemPrompt.trim(),
+            ui_language: uiLanguage,
+            interaction_mode: interactionMode,
+          },
+        }),
+      }).catch((error) => console.warn("save task config failed", error));
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [
+    chatLoaded,
+    customModelName,
+    systemPrompt,
+    latestTaskInstruction,
+    interactionMode,
+    llmProvider,
+    normalizedTemperature,
+    selectedAnalysisFiles,
+    sessionId,
+    uiLanguage,
+  ]);
 
   const generatedBundleCounts = useMemo(() => {
     const generatedFiles = workspaceFiles.filter(
-      (file) => isGeneratedBundleFile(file)
+      (file) => isGeneratedBundleFile(file) && !isPythonWorkspaceFile(file)
     );
     return {
       all: generatedFiles.length,
@@ -1712,40 +1988,15 @@ export function ThreePanelInterface() {
   }, [isGeneratedBundleFile, workspaceFiles]);
 
   const workspaceFileCounts = useMemo(() => {
-    const generated = rightPanelSourceFiles.filter((file) =>
-      isGeneratedWorkspaceFile(file)
-    ).length;
-    const all = rightPanelSourceFiles.length;
-    return {
-      uploaded: Math.max(all - generated, 0),
-      generated,
-      all,
-    };
-  }, [isGeneratedWorkspaceFile, rightPanelSourceFiles]);
+    return countWorkspaceFiles(rightPanelSourceFiles);
+  }, [rightPanelSourceFiles]);
 
   const filteredWorkspaceFiles = useMemo(() => {
-    const query = workspaceSearch.trim().toLowerCase();
-    const filtered = rightPanelSourceFiles
-      .filter((file) => {
-        const isGenerated = isGeneratedWorkspaceFile(file);
-        if (workspaceView === "generated" && !isGenerated) return false;
-        if (workspaceView === "uploaded" && isGenerated) return false;
-        if (!query) return true;
-        return (
-          file.name.toLowerCase().includes(query) ||
-          file.path.toLowerCase().includes(query)
-        );
-      })
-      .sort((a, b) => {
-        if (isGeneratedWorkspaceFile(a) !== isGeneratedWorkspaceFile(b)) {
-          return isGeneratedWorkspaceFile(a) ? 1 : -1;
-        }
-        return a.name.localeCompare(b.name);
-      });
-    return dedupeGeneratedDisplayFiles(filtered);
+    return dedupeGeneratedDisplayFiles(
+      filterWorkspaceFiles(rightPanelSourceFiles, workspaceView, workspaceSearch)
+    );
   }, [
     dedupeGeneratedDisplayFiles,
-    isGeneratedWorkspaceFile,
     rightPanelSourceFiles,
     workspaceSearch,
     workspaceView,
@@ -1796,10 +2047,6 @@ export function ThreePanelInterface() {
     return "border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-900/60";
   }, []);
 
-  const handlePresetChange = useCallback((value: string) => {
-    setSelectedPresetId(value);
-  }, []);
-
   const downloadGeneratedBundle = useCallback(
     async (category: "all" | "table" | "image" | "other") => {
       try {
@@ -1838,6 +2085,11 @@ export function ThreePanelInterface() {
       )}&session_id=${encodeURIComponent(sessionId)}`;
       const res = await fetch(url, { method: "DELETE" });
       if (res.ok) {
+        setSelectedAnalysisFiles((current) => {
+          const next = new Set(current);
+          next.delete(p);
+          return next;
+        });
         await loadWorkspaceTree();
         await loadWorkspaceFiles();
       }
@@ -1902,7 +2154,22 @@ export function ThreePanelInterface() {
       const url = `${API_URLS.WORKSPACE_UPLOAD_TO}?dir=${encodeURIComponent(
         dirPath || ""
       )}&session_id=${encodeURIComponent(sessionId)}`;
-      await fetch(url, { method: "POST", body: form });
+      const response = await fetch(url, { method: "POST", body: form });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      const payload = await response.json();
+      const uploadedPaths = Array.isArray(payload?.files)
+        ? payload.files.map((file: { path?: string }) => file.path).filter(Boolean)
+        : [];
+      if (!dirPath && uploadedPaths.length) {
+        setSelectedAnalysisFiles((current) => {
+          const next = new Set(current);
+          uploadedPaths.forEach((path: string) => next.add(path));
+          return next;
+        });
+        fileSelectionInitializedRef.current = true;
+      }
       await loadWorkspaceTree();
       await loadWorkspaceFiles();
       if (blockedFiles.length) {
@@ -2346,6 +2613,9 @@ export function ThreePanelInterface() {
 
       if (response.ok) {
         setWorkspaceFiles([]);
+        setSelectedAnalysisFiles(new Set());
+        fileSelectionInitializedRef.current = false;
+        discardPendingContinuation();
         await loadWorkspaceTree();
         await loadWorkspaceFiles();
         toast({
@@ -2511,7 +2781,7 @@ export function ThreePanelInterface() {
 
       const normalizedTarget = decodeSafe(normalizedPath).toLowerCase();
       const hasSlash = normalizedPath.includes("/");
-      const matchedFile = workspaceFiles
+      const matchedFile = workspaceFilesRef.current
         .filter((file) => {
           const filePath = String(file.path || "")
             .replace(/\\/g, "/")
@@ -2554,7 +2824,7 @@ export function ThreePanelInterface() {
 
       return matchedFile?.path || normalizedPath;
     },
-    [workspaceFiles]
+    []
   );
 
   const normalizeToLocalFileUrl = useCallback(
@@ -2620,6 +2890,10 @@ export function ThreePanelInterface() {
           nextUrl.searchParams.set("download", "1");
         } else {
           nextUrl.searchParams.delete("download");
+        }
+        const version = parsed.searchParams.get("v");
+        if (version) {
+          nextUrl.searchParams.set("v", version);
         }
         return `${nextUrl.pathname}${nextUrl.search}`;
       }
@@ -2699,6 +2973,8 @@ export function ThreePanelInterface() {
       const nextTableName = options?.tableName ?? "";
       const nextSheetName = options?.sheetName ?? "";
 
+      const requestId = ++previewRequestIdRef.current;
+
       setPreviewTitle(file.name);
       setPreviewDownloadUrl(
         resolveWorkspaceFileUrl(file.download_url || file.preview_url || "", {
@@ -2760,10 +3036,12 @@ export function ThreePanelInterface() {
         );
         if (!res.ok) throw new Error("failed to fetch preview");
         const payload = (await res.json()) as PreviewPayload;
+        if (previewRequestIdRef.current !== requestId) return;
         setPreviewPayload(payload);
         setPreviewType(payload.kind);
         setPreviewContent(payload.content || "");
       } catch (e) {
+        if (previewRequestIdRef.current !== requestId) return;
         setPreviewType("binary");
         setPreviewContent(file.download_url);
         setPreviewPayload({
@@ -2772,7 +3050,9 @@ export function ThreePanelInterface() {
           content: file.download_url,
         });
       } finally {
-        setPreviewLoading(false);
+        if (previewRequestIdRef.current === requestId) {
+          setPreviewLoading(false);
+        }
       }
     },
     [sessionId]
@@ -2798,6 +3078,85 @@ export function ThreePanelInterface() {
       tableName: "",
       sheetName: "",
     });
+  };
+
+  const openSampleDialog = async () => {
+    setIsSampleDialogOpen(true);
+    if (sampleCatalog.length || isSampleCatalogLoading) return;
+
+    setIsSampleCatalogLoading(true);
+    try {
+      const response = await fetch(API_URLS.WORKSPACE_SAMPLES);
+      if (!response.ok) throw new Error(await response.text());
+      const payload = await response.json();
+      const datasets = normalizeSampleCatalog(payload) as SampleDataset[];
+      if (!datasets.length) throw new Error("sample catalog is empty");
+      setSampleCatalog(datasets);
+      setSelectedSampleId(datasets[0].id);
+      setSelectedSampleQuestionId(datasets[0].questions[0].id);
+    } catch (error) {
+      console.error("load sample catalog failed", error);
+      toast({
+        description:
+          uiLanguage === "zh" ? "示例数据目录加载失败" : "Failed to load sample catalog",
+        variant: "destructive",
+      });
+    } finally {
+      setIsSampleCatalogLoading(false);
+    }
+  };
+
+  const loadSampleData = async () => {
+    if (!sessionId || isLoadingSample) return;
+    const selection = findSampleSelection(
+      sampleCatalog,
+      selectedSampleId,
+      selectedSampleQuestionId
+    ) as { dataset: SampleDataset; question: SampleQuestion } | null;
+    if (!selection) return;
+
+    setIsLoadingSample(true);
+    try {
+      const response = await fetch(
+        buildApiUrlWithParams(API_CONFIG.ENDPOINTS.WORKSPACE_SAMPLE, {
+          session_id: sessionId,
+          sample_id: selection.dataset.id,
+          clear_existing: true,
+        }),
+        { method: "POST" }
+      );
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+      const data = await response.json();
+      const files = Array.isArray(data.files) ? (data.files as WorkspaceFile[]) : [];
+      if (!files.length) throw new Error("sample response has no files");
+      setAttachments([]);
+      setUploadMsg("");
+      setSelectedAnalysisFiles(new Set(files.map((file) => file.path)));
+      fileSelectionInitializedRef.current = true;
+      discardPendingContinuation();
+      setInputValue(selection.question.prompt[uiLanguage]);
+      setSelectedWorkspacePath(files[0].path);
+      await Promise.all([loadWorkspaceFiles(), loadWorkspaceTree()]);
+      await openPreview(files[0]);
+      setIsSampleDialogOpen(false);
+      toast({
+        description:
+          uiLanguage === "zh"
+            ? `已加载“${selection.dataset.title.zh}”并填入问题`
+            : `Loaded “${selection.dataset.title.en}” and filled in the question`,
+      });
+    } catch (error) {
+      console.error("load sample data failed", error);
+      toast({
+        description:
+          uiLanguage === "zh" ? "示例数据加载失败" : "Failed to load sample data",
+        variant: "destructive",
+      });
+    } finally {
+      setIsLoadingSample(false);
+    }
   };
 
   useEffect(() => {
@@ -3044,6 +3403,36 @@ export function ThreePanelInterface() {
     );
   }, [selectedWorkspacePath, workspaceFiles]);
 
+  const previewedPathRef = useRef("");
+  const previewedVersionRef = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    if (!activePreviewFile || !selectedWorkspacePath) return;
+    const version = activePreviewFile.modified_at_ns;
+    const changed =
+      previewedPathRef.current !== activePreviewFile.path ||
+      previewedVersionRef.current !== version;
+    if (!changed) return;
+    previewedPathRef.current = activePreviewFile.path;
+    previewedVersionRef.current = version;
+    if (previewTitle === activePreviewFile.name) {
+      void loadPreview(activePreviewFile, {
+        openModal: isPreviewOpen,
+        page: previewPage,
+        tableName: previewTableName,
+        sheetName: previewSheetName,
+      });
+    }
+  }, [
+    activePreviewFile,
+    isPreviewOpen,
+    loadPreview,
+    previewPage,
+    previewSheetName,
+    previewTableName,
+    previewTitle,
+    selectedWorkspacePath,
+  ]);
+
 
   const handlePreviewPageChange = useCallback(
     async (nextPage: number) => {
@@ -3098,22 +3487,13 @@ export function ThreePanelInterface() {
     () =>
       dedupeGeneratedDisplayFiles(
         rightPanelSourceFiles
-          .filter((file) => isGeneratedWorkspaceFile(file))
+          .filter(
+            (file) =>
+              isGeneratedWorkspaceFile(file) && !isPythonWorkspaceFile(file)
+          )
           .sort((left, right) => right.name.localeCompare(left.name))
       ).slice(0, 8),
     [dedupeGeneratedDisplayFiles, isGeneratedWorkspaceFile, rightPanelSourceFiles]
-  );
-
-  const handleMessagesScroll = useCallback(
-    (event: React.UIEvent<HTMLDivElement>) => {
-      const target = event.currentTarget;
-      const isBottom =
-        Math.abs(
-          target.scrollHeight - target.scrollTop - target.clientHeight
-        ) < 50;
-      stickToBottomRef.current = isBottom;
-    },
-    []
   );
 
   const updateActiveSectionFromScroll = useCallback(() => {
@@ -3159,7 +3539,7 @@ export function ThreePanelInterface() {
       // 只有用户当前在底部时才自动跟随输出
       const distanceToBottom =
         container.scrollHeight - container.scrollTop - container.clientHeight;
-      stickToBottomRef.current = distanceToBottom <= 24;
+      stickToBottomRef.current = distanceToBottom <= SCROLL_BOTTOM_THRESHOLD_PX;
 
       if (activeSectionRafRef.current) return;
       activeSectionRafRef.current = window.requestAnimationFrame(() => {
@@ -3243,6 +3623,8 @@ export function ThreePanelInterface() {
                 isDarkMode={isDarkMode}
                 onEdit={(c) => {
                   setCodeEditorContent(c);
+                  setCodeEditorOriginalCode(c);
+                  setAppliedCodeEdit(null);
                   setSelectedCodeSection(c);
                   setShowCodeEditor(true);
                 }}
@@ -3515,6 +3897,8 @@ export function ThreePanelInterface() {
                         onClick={() => {
                           const code = extractCode(body || "");
                           setCodeEditorContent(code);
+                          setCodeEditorOriginalCode(code);
+                          setAppliedCodeEdit(null);
                           setSelectedCodeSection(body || "");
                           setShowCodeEditor(true);
                         }}
@@ -3721,7 +4105,8 @@ export function ThreePanelInterface() {
       let sectionBody = match.content;
       let fileGallery: JSX.Element | null = null;
       if (match.type === "File") {
-        const files = parseGeneratedFiles(match.content);
+        sectionBody = filterPythonFileLinks(match.content);
+        const files = parseGeneratedFiles(sectionBody);
         if (files.length) {
           fileGallery = (
             <div className="mt-3">
@@ -3773,6 +4158,11 @@ export function ThreePanelInterface() {
             </div>
           );
         }
+      }
+
+      if (match.type === "File" && !sectionBody && !fileGallery) {
+        lastPosition = match.position + match.fullMatch.length;
+        return;
       }
 
       parts.push(
@@ -3855,6 +4245,8 @@ export function ThreePanelInterface() {
                         onClick={() => {
                           const code = extractCode(match.content);
                           setCodeEditorContent(code);
+                          setCodeEditorOriginalCode(code);
+                          setAppliedCodeEdit(null);
                           setSelectedCodeSection(match.content);
                           setShowCodeEditor(true);
                         }}
@@ -4293,13 +4685,29 @@ export function ThreePanelInterface() {
         body: JSON.stringify({
           code: codeEditorContent,
           session_id: sessionId,
+          instruction: appliedCodeEdit?.instruction || "",
+          original_code: appliedCodeEdit?.originalCode || codeEditorOriginalCode,
         }),
       });
 
       if (response.ok) {
         const data = await response.json();
         setCodeExecutionResult(data.result);
-        await loadWorkspaceFiles(); // Refresh file list after execution
+        if (data.trace_content) {
+          setMessages((current) => [
+            ...current,
+            {
+              id: String(data.message_id || `manual-run-${Date.now()}`),
+              sender: "ai",
+              content: String(data.trace_content),
+              timestamp: new Date(),
+            },
+          ]);
+        }
+        setCodeEditorOriginalCode(codeEditorContent);
+        setAppliedCodeEdit(null);
+        await loadWorkspaceFiles();
+        await loadWorkspaceTree();
       } else {
         setCodeExecutionResult("Error: Failed to execute code");
       }
@@ -4308,6 +4716,143 @@ export function ThreePanelInterface() {
     } finally {
       setIsExecutingCode(false);
     }
+  };
+
+  const validateCodeEditRuntime = () => {
+    const trimmedCustomModelName = customModelName.trim();
+    if (llmProvider === "heywhale" && !heywhaleApiKey.trim()) {
+      toastRef.current({
+        description: textLabels.needHeywhaleKey,
+        variant: "destructive",
+      });
+      return null;
+    }
+    if (llmProvider === "custom" && !trimmedCustomModelName) {
+      toastRef.current({
+        description: textLabels.needCustomModel,
+        variant: "destructive",
+      });
+      return null;
+    }
+    if (llmProvider === "custom" && !customApiBase.trim()) {
+      toastRef.current({
+        description: textLabels.needCustomApiBase,
+        variant: "destructive",
+      });
+      return null;
+    }
+    return trimmedCustomModelName;
+  };
+
+  const handleCodeEditorChange = (value?: string) => {
+    setCodeEditorContent(value || "");
+    setPendingCodeEdit(null);
+  };
+
+  const requestAiCodeEdit = async () => {
+    const instruction = codeEditInstruction.trim();
+    const trimmedCustomModelName = validateCodeEditRuntime();
+    if (trimmedCustomModelName === null) return;
+    if (!codeEditorContent.trim()) {
+      toastRef.current({
+        description:
+          uiLanguage === "zh" ? "请先在编辑器中放入代码" : "Add code to the editor first.",
+        variant: "destructive",
+      });
+      return;
+    }
+    if (!instruction) {
+      toastRef.current({
+        description:
+          uiLanguage === "zh" ? "请输入自然语言修改指令" : "Enter an edit instruction first.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setIsEditingCodeWithAi(true);
+    setPendingCodeEdit(null);
+    try {
+      const response = await fetch(API_URLS.EDIT_CODE, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          code: codeEditorContent,
+          instruction,
+          model:
+            llmProvider === "custom"
+              ? trimmedCustomModelName || DEFAULT_MODEL_NAME
+              : DEFAULT_MODEL_NAME,
+          provider: llmProvider,
+          api_key:
+            llmProvider === "heywhale"
+              ? heywhaleApiKey.trim()
+              : llmProvider === "custom"
+                ? customApiKey.trim()
+                : "",
+          api_base: llmProvider === "custom" ? customApiBase.trim() : "",
+          temperature: normalizedTemperature,
+          session_id: sessionId,
+        }),
+      });
+
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload?.detail || `HTTP ${response.status}`);
+      }
+
+      const modifiedCode = String(payload?.code || "");
+      if (!modifiedCode.trim()) {
+        throw new Error("LLM response did not contain modified code");
+      }
+
+      setPendingCodeEdit({
+        originalCode: codeEditorContent,
+        modifiedCode,
+        instruction,
+        diffRows: buildLineDiff(codeEditorContent, modifiedCode) as CodeDiffRow[],
+      });
+      toastRef.current({
+        description:
+          uiLanguage === "zh"
+            ? "已生成修改预览，请确认或回滚"
+            : "Generated a diff preview. Confirm or roll it back.",
+      });
+    } catch (error) {
+      toastRef.current({
+        description:
+          uiLanguage === "zh"
+            ? `自然语言修改失败：${error}`
+            : `AI code edit failed: ${error}`,
+        variant: "destructive",
+      });
+    } finally {
+      setIsEditingCodeWithAi(false);
+    }
+  };
+
+  const confirmAiCodeEdit = () => {
+    if (!pendingCodeEdit) return;
+    setCodeEditorContent(pendingCodeEdit.modifiedCode);
+    setSelectedCodeSection(pendingCodeEdit.modifiedCode);
+    setAppliedCodeEdit({
+      originalCode: pendingCodeEdit.originalCode,
+      instruction: pendingCodeEdit.instruction,
+    });
+    setPendingCodeEdit(null);
+    toastRef.current({
+      description: uiLanguage === "zh" ? "修改已应用到编辑器" : "Edit applied to the editor.",
+    });
+  };
+
+  const rollbackAiCodeEdit = () => {
+    setPendingCodeEdit(null);
+    toastRef.current({
+      description:
+        uiLanguage === "zh"
+          ? "已回滚 AI 修改预览，编辑器保持原代码"
+          : "AI edit preview rolled back. The editor kept the original code.",
+    });
   };
 
   /*
@@ -4335,6 +4880,8 @@ export function ThreePanelInterface() {
                 isDarkMode={isDarkMode}
                 onEdit={(c) => {
                   setCodeEditorContent(c);
+                  setCodeEditorOriginalCode(c);
+                  setAppliedCodeEdit(null);
                   setSelectedCodeSection(c);
                   setShowCodeEditor(true);
                 }}
@@ -4566,17 +5113,16 @@ export function ThreePanelInterface() {
   }, [parseMessageIndexFromSectionKey, touchMessageAt]);
 
   const latestAssistantMeta = useMemo(() => {
-    for (let index = messages.length - 1; index >= 0; index--) {
-      const message = messages[index];
-      if (message.sender !== "ai") continue;
-      const sections = extractSections(message.content, index);
-      return {
-        message,
-        index,
-        sections,
-      };
-    }
-    return null;
+    const assistantIndexes = getActiveAnalysisAssistantMessageIndexes(messages);
+    if (assistantIndexes.length === 0) return null;
+    const index = assistantIndexes[assistantIndexes.length - 1];
+    return {
+      message: messages[index],
+      index,
+      sections: assistantIndexes.flatMap((messageIndex) =>
+        extractSections(messages[messageIndex].content, messageIndex)
+      ),
+    };
   }, [messages]);
 
   const navigatorActiveSectionKey = useMemo(() => {
@@ -4830,32 +5376,43 @@ export function ThreePanelInterface() {
     const controller = streamAbortControllerRef.current;
     if (!controller && !isTypingRef.current) return;
     setIsStopping(true);
-    controller?.abort();
-    streamAbortControllerRef.current = null;
-    setIsTyping(false);
-    setStreamingMessageId(null);
     try {
       if (sessionId) {
-        await fetch(API_URLS.CHAT_STOP, {
+        const response = await fetch(API_URLS.CHAT_STOP, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
           },
           body: JSON.stringify({ session_id: sessionId }),
         });
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
       }
+      controller?.abort();
+      streamAbortControllerRef.current = null;
+      updateTypingState(false);
+      setStreamingMessageId(null);
     } catch (error) {
       console.warn("stop stream failed", error);
+      toastRef.current({
+        description:
+          uiLanguage === "zh"
+            ? "停止任务失败，请稍后重试"
+            : "Failed to stop the task. Please try again.",
+        variant: "destructive",
+      });
     } finally {
       setIsStopping(false);
     }
-  }, [sessionId]);
+  }, [sessionId, uiLanguage, updateTypingState]);
 
   const handleSendMessage = async () => {
     if (isTypingRef.current) {
       await handleStopMessage();
       return;
     }
+    const resumePending = manualPaused;
     const trimmedCustomModelName = customModelName.trim();
     if (llmProvider === "heywhale" && !heywhaleApiKey.trim()) {
       toastRef.current({
@@ -4878,25 +5435,43 @@ export function ThreePanelInterface() {
       });
       return;
     }
-    if (!inputValue.trim() && attachments.length === 0) return;
+    if (!resumePending && !inputValue.trim() && attachments.length === 0) return;
+    if (resumePending) setManualPaused(false);
+    const additionalInstruction = resumePending ? inputValue.trim() : "";
+    const shouldAppendUserMessage = resumePending
+      ? !!additionalInstruction
+      : !!inputValue.trim() || attachments.length > 0;
     const baseMessageIndex = messages.length;
-    const aiMessageIndex = baseMessageIndex + 1;
+    const aiMessageIndex = baseMessageIndex + (shouldAppendUserMessage ? 1 : 0);
 
-    const newMessage: Message = {
-      id: Date.now().toString(),
-      content: inputValue,
-      sender: "user",
-      timestamp: new Date(),
-      attachments: attachments.length > 0 ? [...attachments] : undefined,
-    };
+    const newMessage: Message | null = shouldAppendUserMessage
+      ? {
+          id: resumePending
+            ? `manual-instruction-${Date.now()}`
+            : Date.now().toString(),
+          content: inputValue,
+          sender: "user",
+          timestamp: new Date(),
+          attachments:
+            !resumePending && attachments.length > 0
+              ? [...attachments]
+              : undefined,
+        }
+      : null;
+    const sessionMessagesForRequest = newMessage
+      ? [...messages, newMessage]
+      : messages;
 
-    setMessages((prev) => [...prev, newMessage]);
+    if (newMessage) {
+      setMessages((prev) => [...prev, newMessage]);
+    }
     setInputValue("");
     setAttachments([]);
-    setIsTyping(true);
+    updateTypingState(true);
     setIsStopping(false);
     const abortController = new AbortController();
     streamAbortControllerRef.current = abortController;
+    const aiMsgId = `${Date.now()}-${Math.random()}`;
 
     try {
       const response = await fetch(API_URLS.CHAT_COMPLETIONS, {
@@ -4920,33 +5495,49 @@ export function ThreePanelInterface() {
           api_base: llmProvider === "custom" ? customApiBase.trim() : "",
           temperature: normalizedTemperature,
           ui_language: uiLanguage,
-          messages: [
-            ...(effectiveSystemPrompt
-              ? [
-                  {
-                    role: "system",
-                    content: effectiveSystemPrompt,
-                  },
-                ]
-              : []),
-            ...messages
-              .filter((m) => !m.localOnly)
-              .map((msg) => ({
-                role: msg.sender === "user" ? "user" : "assistant",
-                content: msg.content,
-              })),
-            {
-              role: "user",
-              content: inputValue,
-            },
-          ],
+          system_prompt: systemPrompt.trim(),
+          workspace: Array.from(selectedAnalysisFiles),
+          assistant_message_id: aiMsgId,
+          interaction_mode: interactionMode,
+          resume_pending: resumePending,
+          additional_instruction: additionalInstruction,
+          session_messages: sessionMessagesForRequest
+            .filter((message) => !message.localOnly)
+            .map((message) => ({
+              id: message.id,
+              role: message.sender === "user" ? "user" : "assistant",
+              content: message.content,
+              timestamp: message.timestamp,
+              attachments: message.attachments || [],
+            })),
+          messages: resumePending
+            ? []
+            : [
+                ...(effectiveSystemPrompt
+                  ? [
+                      {
+                        role: "system",
+                        content: effectiveSystemPrompt,
+                      },
+                    ]
+                  : []),
+                ...messages
+                  .filter((m) => !m.localOnly)
+                  .map((msg) => ({
+                    role: msg.sender === "user" ? "user" : "assistant",
+                    content: msg.content,
+                  })),
+                {
+                  role: "user",
+                  content: inputValue,
+                },
+              ],
           stream: true,
           session_id: sessionId,
         }),
       });
 
       const contentType = response.headers.get("content-type") || "";
-      console.log("[Chat] status=", response.status, "ctype=", contentType);
 
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
@@ -4966,13 +5557,10 @@ export function ThreePanelInterface() {
           },
         ]);
         autoCollapseForContent(content, aiMessageIndex);
-        if (content.includes("<File>")) {
-          await loadWorkspaceTree();
-          await loadWorkspaceFiles();
-        }
+        await Promise.all([loadWorkspaceTree(), loadWorkspaceFiles()]);
         streamAbortControllerRef.current = null;
         setIsStopping(false);
-        setIsTyping(false);
+        updateTypingState(false);
         return;
       }
 
@@ -4980,7 +5568,7 @@ export function ThreePanelInterface() {
       const reader = response.body?.getReader();
       const decoder = new TextDecoder();
       if (!reader) {
-        setIsTyping(false);
+        updateTypingState(false);
         setStreamingMessageId(null);
         streamAbortControllerRef.current = null;
         setIsStopping(false);
@@ -4988,7 +5576,6 @@ export function ThreePanelInterface() {
       }
 
       // 预先插入 AI 消息占位
-      const aiMsgId = `${Date.now()}-${Math.random()}`;
       setStreamingMessageId(aiMsgId);
       setMessages((prev) => [
         ...prev,
@@ -5000,16 +5587,9 @@ export function ThreePanelInterface() {
         },
       ]);
 
-      aiPendingContentRef.current = "";
-      aiDisplayedContentRef.current = "";
-
-      if (streamRafRef.current) {
-        cancelAnimationFrame(streamRafRef.current);
-        streamRafRef.current = null;
-      }
-
       // [修改] 用于在本地累积完整的消息内容
       let accumulatedMessage = "";
+      let refreshedExecutionCount = 0;
 
       // 更新 UI 的辅助函数
       const flushAiMessage = (visibleText: string) => {
@@ -5022,49 +5602,20 @@ export function ThreePanelInterface() {
           return next;
         });
 
-        if (visibleText.includes("<File>")) {
-          if (fileRefreshTimerRef.current) {
-            window.clearTimeout(fileRefreshTimerRef.current);
-          }
-          fileRefreshTimerRef.current = window.setTimeout(async () => {
-            await loadWorkspaceTree();
-            await loadWorkspaceFiles();
-            fileRefreshTimerRef.current = null;
-          }, 300);
+        const executionCount = (visibleText.match(/<\/Execute>/g) || []).length;
+        if (executionCount > refreshedExecutionCount) {
+          refreshedExecutionCount = executionCount;
+          void Promise.all([loadWorkspaceTree(), loadWorkspaceFiles()]);
         }
       };
 
-      // 启动平滑动画循环
-      const loop = () => {
-        const pending = aiPendingContentRef.current;
-        const displayed = aiDisplayedContentRef.current;
-
-        if (displayed !== pending) {
-          const diff = pending.length - displayed.length;
-          // 若 pending 比 displayed 短（理论不应发生），或差异极小，则直接同步
-          if (diff < 0) {
-            aiDisplayedContentRef.current = pending;
-            flushAiMessage(pending);
-          } else {
-            // 自适应速度：
-            // 如果落后很多（网络卡顿后突然涌入），则步进大一些以快速追赶
-            // 如果落后很少，则步进小，实现打字机效果
-            // min=1 保证不卡死，max 限制瞬时渲染量
-            // Math.ceil(diff / 10) 意味着每帧追赶 10% 的差距 -> 渐进式平滑
-            const step = Math.max(1, Math.ceil(diff / 5));
-
-            const next = pending.slice(0, displayed.length + step);
-            aiDisplayedContentRef.current = next;
-            flushAiMessage(next);
-
-
-          }
-        }
-        streamRafRef.current = requestAnimationFrame(loop);
-      };
-      streamRafRef.current = requestAnimationFrame(loop);
+      const yieldToNextPaint = () =>
+        new Promise<void>((resolve) => {
+          window.requestAnimationFrame(() => resolve());
+        });
 
       let buffer = "";
+      let nextInteractionStatus: "idle" | "awaiting_user" = "idle";
 
       while (true) {
         const { done, value } = await reader.read();
@@ -5083,11 +5634,18 @@ export function ThreePanelInterface() {
           try {
             const json = JSON.parse(trimmed);
             const deltaContent = json.choices?.[0]?.delta?.content;
+            const interactionStatus = json.deepanalyze?.interaction_status;
+            if (
+              interactionStatus === "idle" ||
+              interactionStatus === "awaiting_user"
+            ) {
+              nextInteractionStatus = interactionStatus;
+            }
 
             if (deltaContent) {
               accumulatedMessage += deltaContent;
-              // 仅更新 pending，不直接刷新 UI
-              aiPendingContentRef.current = accumulatedMessage;
+              flushAiMessage(accumulatedMessage);
+              await yieldToNextPaint();
             }
           } catch (e) {
             console.warn("JSON parse error for line:", trimmed, e);
@@ -5099,27 +5657,30 @@ export function ThreePanelInterface() {
         try {
           const json = JSON.parse(buffer.trim());
           const deltaContent = json.choices?.[0]?.delta?.content;
+          const interactionStatus = json.deepanalyze?.interaction_status;
+          if (
+            interactionStatus === "idle" ||
+            interactionStatus === "awaiting_user"
+          ) {
+            nextInteractionStatus = interactionStatus;
+          }
           if (deltaContent) {
             accumulatedMessage += deltaContent;
-            aiPendingContentRef.current = accumulatedMessage;
+            flushAiMessage(accumulatedMessage);
+            await yieldToNextPaint();
           }
         } catch (e) { }
       }
 
-      // 流束后，确保最终内容完全显示
-      // 停止动画循环
-      if (streamRafRef.current) {
-        cancelAnimationFrame(streamRafRef.current);
-        streamRafRef.current = null;
-      }
-      // 强制同步最后状态
+      // 确保缓存中的最后一段内容也写入消息状态。
       flushAiMessage(accumulatedMessage);
       autoCollapseForContent(accumulatedMessage, aiMessageIndex);
+      setManualPaused(nextInteractionStatus === "awaiting_user");
 
       // 结束后刷新一次文件列表确保无遗漏
       await loadWorkspaceFiles();
       await loadWorkspaceTree();
-      setIsTyping(false); // 结束加载状态
+      updateTypingState(false); // 结束加载状态
       setStreamingMessageId(null);
       streamAbortControllerRef.current = null;
       setIsStopping(false);
@@ -5127,8 +5688,46 @@ export function ThreePanelInterface() {
     } catch (error) {
       if ((error as Error)?.name !== "AbortError") {
         console.error("Error sending message:", error);
+        toast({
+          description: textLabels.streamInterrupted,
+          variant: "destructive",
+        });
+        setMessages((prev) => {
+          const idx = prev.findIndex((m) => m.id === aiMsgId);
+          if (idx >= 0) {
+            const next = [...prev];
+            next[idx] = {
+              ...next[idx],
+              content: `${next[idx].content}\n\n> ${textLabels.streamInterrupted}`,
+            };
+            return next;
+          }
+          return [
+            ...prev,
+            {
+              id: aiMsgId,
+              sender: "ai",
+              content: `\n\n> ${textLabels.streamInterrupted}`,
+              timestamp: new Date(),
+            },
+          ];
+        });
+        if (interactionMode === "manual" && sessionId) {
+          void fetch(
+            `${API_URLS.SESSION_STATE}?session_id=${encodeURIComponent(sessionId)}`
+          )
+            .then((response) => (response.ok ? response.json() : null))
+            .then((state) => {
+              if (state) {
+                setManualPaused(
+                  isAwaitingManualContinuation(state.interaction_state)
+                );
+              }
+            })
+            .catch(() => undefined);
+        }
       }
-      setIsTyping(false);
+      updateTypingState(false);
       setStreamingMessageId(null);
       streamAbortControllerRef.current = null;
       setIsStopping(false);
@@ -5155,6 +5754,66 @@ export function ThreePanelInterface() {
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
   };
+
+  const composerPlaceholder = manualPaused
+    ? uiLanguage === "zh"
+      ? "可选：为下一轮分析追加指令"
+      : "Optional: add instructions for the next analysis round"
+    : uiLanguage === "zh"
+      ? "输入分析问题，或从左侧加载示例..."
+      : "Enter an analysis question, or load a sample from the left...";
+  const compactComposerPlaceholder = manualPaused
+    ? uiLanguage === "zh"
+      ? "追加指令（可选）"
+      : "Add instructions (optional)"
+    : uiLanguage === "zh"
+      ? "输入分析问题..."
+      : "Enter a question...";
+
+  const renderInteractionModeControl = () => (
+    <div
+      className="mb-2 flex min-w-0 flex-wrap items-center gap-2"
+      data-testid="interaction-mode-control"
+    >
+      <Tabs
+        value={interactionMode}
+        onValueChange={(value) =>
+          setInteractionMode(normalizeInteractionMode(value))
+        }
+        className="gap-0"
+      >
+        <TabsList className="h-8 rounded-md bg-gray-100 p-0.5 dark:bg-gray-900">
+          <TabsTrigger
+            value="auto"
+            disabled={isTyping}
+            className="h-7 rounded px-2 text-xs"
+          >
+            <Sparkles className="h-3.5 w-3.5" />
+            {uiLanguage === "zh" ? "自动" : "Auto"}
+          </TabsTrigger>
+          <TabsTrigger
+            value="manual"
+            disabled={isTyping}
+            className="h-7 rounded px-2 text-xs"
+          >
+            <Hand className="h-3.5 w-3.5" />
+            {uiLanguage === "zh" ? "手动" : "Manual"}
+          </TabsTrigger>
+        </TabsList>
+      </Tabs>
+      {manualPaused && (
+        <Badge
+          variant="outline"
+          className="min-w-0 rounded-full border-amber-300 bg-amber-50 px-2 py-1 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200"
+        >
+          <CirclePause className="mr-1 h-3.5 w-3.5 shrink-0" />
+          <span className="truncate">
+            {uiLanguage === "zh" ? "等待继续" : "Waiting to continue"}
+          </span>
+        </Badge>
+      )}
+    </div>
+  );
 
   const renderClearChatButton = (buttonClassName: string) => (
     <AlertDialog>
@@ -5193,6 +5852,38 @@ export function ThreePanelInterface() {
     </AlertDialog>
   );
 
+  const renderComposerInput = (placeholder: string) => (
+    <div
+      className="flex min-w-0 flex-1 items-end overflow-hidden rounded-2xl border border-gray-200 bg-white transition-colors focus-within:border-gray-400 dark:border-gray-800 dark:bg-black dark:focus-within:border-gray-600"
+      data-testid="chat-composer-input"
+    >
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={() => fileInputRef.current?.click()}
+        className="h-10 w-10 shrink-0 rounded-full p-0 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+        title={uiLanguage === "zh" ? "上传文件" : "Upload Files"}
+        aria-label={uiLanguage === "zh" ? "上传文件" : "Upload Files"}
+        data-testid="chat-composer-upload"
+      >
+        <Plus className="h-4 w-4" />
+      </Button>
+      <AutoGrowingTextarea
+        value={inputValue}
+        onChange={(e) => setInputValue(e.target.value)}
+        placeholder={placeholder}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            handleSendMessage();
+          }
+        }}
+        className="max-h-40 min-h-10 flex-1 resize-none rounded-none border-0 bg-transparent px-0 py-2.5 pr-3 shadow-none [field-sizing:fixed] focus-visible:border-0 focus-visible:ring-0"
+        data-testid="chat-composer-textarea"
+      />
+    </div>
+  );
+
   const renderChatComposer = (
     wrapperClassName: string,
     options?: { stacked?: boolean }
@@ -5200,99 +5891,60 @@ export function ThreePanelInterface() {
     const stacked = !!options?.stacked;
     return (
       <div className={wrapperClassName}>
-        <div className={stacked ? "space-y-3" : "flex gap-3 items-end"}>
-          {stacked ? (
-            <Textarea
-              value={inputValue}
-              onChange={(e) => setInputValue(e.target.value)}
-              placeholder={
-                uiLanguage === "zh"
-                  ? "\u8f93\u5165\u4f60\u7684\u5206\u6790\u9700\u6c42\uff0c\u6216\u5728\u5de6\u4fa7\u5207\u6362\u9884\u8bbe Prompt..."
-                  : "Describe your analysis task, or pick a preset from the left panel..."
-              }
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  handleSendMessage();
-                }
-              }}
-              className="min-h-24 rounded-2xl border-gray-200 dark:border-gray-800 bg-white dark:bg-black pr-4"
-            />
-          ) : (
-            <>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => fileInputRef.current?.click()}
-                className="h-10 w-10 p-0 rounded-full text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
-                title={uiLanguage === "zh" ? "\u4e0a\u4f20\u6587\u4ef6" : "Upload Files"}
-              >
-                <Paperclip className="h-4 w-4" />
-              </Button>
-              <div className="flex-1 relative">
-                <Textarea
-                  value={inputValue}
-                  onChange={(e) => setInputValue(e.target.value)}
-                  placeholder={
-                    uiLanguage === "zh"
-                      ? "\u8f93\u5165\u4f60\u7684\u5206\u6790\u9700\u6c42\uff0c\u6216\u5728\u5de6\u4fa7\u5207\u6362\u9884\u8bbe Prompt..."
-                      : "Describe your analysis task, or pick a preset from the left panel..."
-                  }
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey) {
-                      e.preventDefault();
-                      handleSendMessage();
-                    }
-                  }}
-                  className="min-h-24 rounded-2xl border-gray-200 dark:border-gray-800 bg-white dark:bg-black pr-4"
-                />
-              </div>
-            </>
+        {renderInteractionModeControl()}
+        <div className={stacked ? "space-y-2" : "flex items-end gap-2"}>
+          {renderComposerInput(
+            stacked ? compactComposerPlaceholder : composerPlaceholder
           )}
 
-          <div className={stacked ? "flex items-center justify-between gap-3" : "flex items-center gap-2"}>
-            {stacked && (
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => fileInputRef.current?.click()}
-                  className="h-10 w-10 p-0 rounded-full text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
-                  title={uiLanguage === "zh" ? "\u4e0a\u4f20\u6587\u4ef6" : "Upload Files"}
-                >
-                  <Paperclip className="h-4 w-4" />
-                </Button>
-              </div>
-            )}
-            <div className="flex items-center gap-2">
-              {isTyping ? (
-                <Button
-                  onClick={handleStopMessage}
-                  size="sm"
-                  className="h-10 rounded-full px-4 bg-red-600 text-white hover:bg-red-700 dark:bg-red-600 dark:text-white dark:hover:bg-red-700"
-                  title={uiLanguage === "zh" ? "\u6b63\u5728\u751f\u6210" : "Generating"}
-                  disabled={isStopping}
-                >
-                  {isStopping ? (
-                    <RefreshCw className="h-4 w-4 mr-1 animate-spin" />
-                  ) : (
-                    <Square className="h-3.5 w-3.5 mr-1 fill-current" />
-                  )}
-                  {uiLanguage === "zh" ? "\u505c\u6b62" : "Stop"}
-                </Button>
-              ) : (
-                <Button
-                  onClick={handleSendMessage}
-                  size="sm"
-                  disabled={!inputValue.trim() && attachments.length === 0}
-                  className="h-10 rounded-full bg-black px-4 text-white dark:bg-white dark:text-black hover:bg-gray-800 dark:hover:bg-gray-200"
-                >
+          <div
+            className={
+              stacked
+                ? "flex items-center justify-end gap-2"
+                : "flex items-center gap-2"
+            }
+          >
+            {isTyping ? (
+              <Button
+                onClick={handleStopMessage}
+                size="sm"
+                className="h-10 rounded-full px-4 bg-red-600 text-white hover:bg-red-700 dark:bg-red-600 dark:text-white dark:hover:bg-red-700"
+                title={uiLanguage === "zh" ? "\u6b63\u5728\u751f\u6210" : "Generating"}
+                disabled={isStopping}
+              >
+                {isStopping ? (
+                  <RefreshCw className="h-4 w-4 mr-1 animate-spin" />
+                ) : (
+                  <Square className="h-3.5 w-3.5 mr-1 fill-current" />
+                )}
+                {uiLanguage === "zh" ? "\u505c\u6b62" : "Stop"}
+              </Button>
+            ) : (
+              <Button
+                onClick={handleSendMessage}
+                size="sm"
+                disabled={
+                  !manualPaused &&
+                  !inputValue.trim() &&
+                  attachments.length === 0
+                }
+                className="h-10 rounded-full bg-black px-4 text-white dark:bg-white dark:text-black hover:bg-gray-800 dark:hover:bg-gray-200"
+              >
+                {manualPaused ? (
+                  <Play className="h-4 w-4 mr-1" />
+                ) : (
                   <Send className="h-4 w-4 mr-1" />
-                  {uiLanguage === "zh" ? "\u53d1\u9001" : "Send"}
-                </Button>
-              )}
-              {renderClearChatButton("h-10 rounded-full px-3")}
-            </div>
+                )}
+                {manualPaused
+                  ? uiLanguage === "zh"
+                    ? "继续分析"
+                    : "Continue"
+                  : uiLanguage === "zh"
+                    ? "发送"
+                    : "Send"}
+              </Button>
+            )}
+            {renderClearChatButton("h-10 rounded-full px-3")}
           </div>
         </div>
       </div>
@@ -5307,7 +5959,7 @@ export function ThreePanelInterface() {
       >
         <ResizablePanelGroup direction="horizontal" className="h-full">
           {/* Left Panel - Workspace Tree */}
-          <ResizablePanel defaultSize={30} minSize={20}>
+          <ResizablePanel defaultSize={25} minSize={20}>
             <div className="flex flex-col min-h-0 min-w-0 h-full bg-white/80 dark:bg-gray-950/80 border-r border-gray-200/70 dark:border-gray-800/70">
               <div className="flex items-start justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-800 shrink-0">
                 <div>
@@ -5334,9 +5986,9 @@ export function ThreePanelInterface() {
                 ref={treeContainerRef}
                 className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-3 py-3 space-y-3"
               >
-                <Card className="rounded-2xl border-gray-200/80 dark:border-gray-800/80 p-3 space-y-3">
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
+                <Collapsible className="border-b border-gray-200/80 pb-3 dark:border-gray-800/80">
+                  <div className="flex items-end gap-2">
+                      <div className="min-w-0 flex-1">
                         <div className="mb-1.5 text-xs font-medium text-gray-700 dark:text-gray-300">
                           {textLabels.language}
                         </div>
@@ -5344,7 +5996,7 @@ export function ThreePanelInterface() {
                           value={uiLanguage}
                           onValueChange={(value) => setUiLanguage(value as UILanguage)}
                         >
-                          <SelectTrigger className="w-full rounded-xl">
+                          <SelectTrigger className="h-9 w-full rounded-lg">
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
@@ -5353,24 +6005,22 @@ export function ThreePanelInterface() {
                           </SelectContent>
                         </Select>
                       </div>
-                      <div>
-                        <div className="mb-1.5 text-xs font-medium text-gray-700 dark:text-gray-300">
-                          {textLabels.promptPresets}
-                        </div>
-                        <Select value={selectedPresetId} onValueChange={handlePresetChange}>
-                          <SelectTrigger className="w-full rounded-xl">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {DATA_ANALYSIS_PROMPT_PRESETS.map((item) => (
-                              <SelectItem key={item.id} value={item.id}>
-                                {item.label[uiLanguage]}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
-                    </div>
+                      <CollapsibleTrigger asChild>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          className="h-9 shrink-0 justify-between rounded-lg px-3 text-xs"
+                          title={uiLanguage === "zh" ? "模型与提示词设置" : "Model & prompt settings"}
+                        >
+                          <span className="flex items-center gap-2">
+                            <Settings2 className="h-3.5 w-3.5" />
+                            {uiLanguage === "zh" ? "设置" : "Settings"}
+                          </span>
+                          <ChevronDown className="h-3.5 w-3.5" />
+                        </Button>
+                      </CollapsibleTrigger>
+                  </div>
+                      <CollapsibleContent className="mt-3 space-y-3 border-t border-gray-100 pt-3 dark:border-gray-800">
                     <div>
                       <div className="mb-1.5 flex items-center justify-between">
                         <div className="text-xs font-medium text-gray-700 dark:text-gray-300">
@@ -5380,7 +6030,7 @@ export function ThreePanelInterface() {
                           variant="ghost"
                           size="sm"
                           className="h-7 text-xs text-gray-500"
-                          onClick={() => setSystemPrompt(DEFAULT_SYSTEM_PROMPT)}
+                          onClick={() => setSystemPrompt("")}
                         >
                           {textLabels.emptySystemPrompt}
                         </Button>
@@ -5392,11 +6042,6 @@ export function ThreePanelInterface() {
                         placeholder={textLabels.systemPromptPlaceholder}
                       />
                     </div>
-                    {moveDialogToLeftPanel &&
-                      renderChatComposer(
-                        "rounded-2xl border border-gray-200/80 dark:border-gray-800/80 bg-gray-50/80 dark:bg-gray-900/40 p-3",
-                        { stacked: true }
-                      )}
                     <div className="grid grid-cols-2 gap-3">
                       <div>
                         <div className="mb-1.5 text-xs font-medium text-gray-700 dark:text-gray-300">
@@ -5505,11 +6150,17 @@ export function ThreePanelInterface() {
                         </div>
                       </div>
                     )}
-                  </Card>
+                      </CollapsibleContent>
+                </Collapsible>
+                {moveDialogToLeftPanel &&
+                  renderChatComposer(
+                    "rounded-xl border border-gray-200/80 dark:border-gray-800/80 bg-gray-50/80 dark:bg-gray-900/40 p-3",
+                    { stacked: true }
+                  )}
 
                 <div className="space-y-4">
                   <div
-                    className={`rounded-[28px] border border-dashed px-5 py-5 text-sm select-none transition-all shadow-[0_18px_40px_rgba(15,23,42,0.06)] ${dropActive
+                    className={`rounded-xl border border-dashed px-4 py-3 text-sm select-none transition-all ${dropActive
                       ? "bg-blue-50 border-blue-300 text-blue-700 dark:bg-blue-950/30 dark:border-blue-800 dark:text-blue-300"
                       : "bg-gray-50 dark:bg-gray-900/40 border-gray-300 dark:border-gray-700 text-gray-600 dark:text-gray-300"
                       }`}
@@ -5524,36 +6175,122 @@ export function ThreePanelInterface() {
                       const files = e.dataTransfer.files;
                       if (files && files.length) uploadToDir("", files);
                     }}
-                    onClick={() => fileInputRef.current?.click()}
-                    role="button"
-                    tabIndex={0}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" || e.key === " ") {
-                        e.preventDefault();
-                        fileInputRef.current?.click();
-                      }
-                    }}
                   >
-                    <div className="flex min-h-[140px] flex-col gap-4">
-                      <div className="flex items-start gap-4">
-                        <div className="mt-0.5 rounded-2xl bg-white/90 p-3 shadow-sm dark:bg-gray-950/90">
+                    <div className="flex min-h-[76px] flex-wrap items-center justify-between gap-3">
+                      <div className="flex min-w-[150px] flex-1 items-center gap-3">
+                        <div className="rounded-lg bg-white/90 p-2 shadow-sm dark:bg-gray-950/90">
                           <Upload className="h-5 w-5" />
                         </div>
-                        <div className="space-y-2">
-                          <div className="inline-flex rounded-full border border-white/70 bg-white/80 px-2.5 py-1 text-[11px] font-medium text-slate-600 shadow-sm dark:border-gray-800 dark:bg-gray-950/80 dark:text-gray-300">
+                        <div className="min-w-0">
+                          <div className="text-sm font-semibold text-slate-900 dark:text-white">
                             {textLabels.uploadPanelTitle}
                           </div>
-                          <div className="text-base font-semibold text-slate-900 dark:text-white">
-                            {textLabels.uploadPanelTitle}
-                          </div>
-                          <div className="max-w-md text-sm leading-6 text-slate-600 dark:text-gray-300">
-                            {textLabels.uploadPanelMeta}
-                          </div>
-                          <div className="text-xs text-gray-500 dark:text-gray-400">
+                          <div className="mt-1 text-xs leading-4 text-gray-500 dark:text-gray-400">
                             {textLabels.uploadPanelHint}
                           </div>
                         </div>
                       </div>
+                      <div className="flex shrink-0 items-center gap-2">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="h-8 rounded-lg"
+                          onClick={() => fileInputRef.current?.click()}
+                        >
+                          <Upload className="h-3.5 w-3.5" />
+                          {uiLanguage === "zh" ? "上传" : "Upload"}
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="h-8 rounded-lg"
+                          disabled={isLoadingSample || isSampleCatalogLoading}
+                          onClick={() => void openSampleDialog()}
+                        >
+                        {isLoadingSample ? (
+                          <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <Database className="h-3.5 w-3.5" />
+                        )}
+                        {uiLanguage === "zh" ? "加载示例" : "Load sample"}
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="border-y border-gray-200/80 py-3 dark:border-gray-800/80">
+                    <div className="mb-2 flex items-center justify-between gap-3">
+                      <div className="text-xs font-medium text-gray-700 dark:text-gray-300">
+                        {uiLanguage === "zh" ? "分析文件" : "Analysis files"}
+                        <span className="ml-2 text-gray-400">
+                          {selectedAnalysisFiles.size}/{rightPanelSourceFiles.filter((file) => !isGeneratedWorkspaceFile(file)).length}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 px-2 text-xs"
+                          onClick={() => {
+                            setSelectedAnalysisFiles(
+                              new Set(
+                                rightPanelSourceFiles
+                                  .filter((file) => !isGeneratedWorkspaceFile(file))
+                                  .map((file) => file.path)
+                              )
+                            );
+                            fileSelectionInitializedRef.current = true;
+                          }}
+                        >
+                          {uiLanguage === "zh" ? "全选" : "All"}
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 px-2 text-xs"
+                          onClick={() => {
+                            setSelectedAnalysisFiles(new Set());
+                            fileSelectionInitializedRef.current = true;
+                          }}
+                        >
+                          {uiLanguage === "zh" ? "清空" : "Clear"}
+                        </Button>
+                      </div>
+                    </div>
+                    <div className="max-h-32 space-y-1 overflow-y-auto">
+                      {rightPanelSourceFiles
+                        .filter((file) => !isGeneratedWorkspaceFile(file))
+                        .map((file) => (
+                          <div
+                            key={file.path}
+                            className="flex items-center gap-2 rounded px-1.5 py-1 text-xs hover:bg-gray-100 dark:hover:bg-gray-900"
+                          >
+                            <Checkbox
+                              checked={selectedAnalysisFiles.has(file.path)}
+                              onCheckedChange={(checked) =>
+                                toggleAnalysisFile(file.path, checked === true)
+                              }
+                            />
+                            <span className="min-w-0 flex-1 truncate" title={file.path}>{file.name}</span>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              className="h-6 w-6 shrink-0"
+                              title={uiLanguage === "zh" ? "预览文件" : "Preview file"}
+                              onClick={() => {
+                                setSelectedWorkspacePath(file.path);
+                                void openPreview(file);
+                              }}
+                            >
+                              <Eye className="h-3.5 w-3.5" />
+                            </Button>
+                          </div>
+                        ))}
                     </div>
                   </div>
 
@@ -5783,15 +6520,18 @@ export function ThreePanelInterface() {
           <ResizableHandle withHandle />
 
           {/* Middle Panel - Chat & Analysis */}
-          <ResizablePanel defaultSize={40} minSize={25}>
+          <ResizablePanel defaultSize={50} minSize={30}>
             <div className="flex flex-col min-h-0 min-w-0 h-full">
               {/* Header */}
               <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-800 shrink-0 bg-white/80 dark:bg-gray-950/80">
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
                     <h1 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
-                      Assistant
+                      {textLabels.appTitle}
                     </h1>
+                    <span className="text-xs text-gray-400 dark:text-gray-500">
+                      {textLabels.appSubtitle}
+                    </span>
                     {isTyping && (
                       <Badge variant="secondary" className="rounded-full px-2.5 py-0.5 text-xs">
                         <RefreshCw className="mr-1 h-3 w-3 animate-spin" />
@@ -5804,12 +6544,25 @@ export function ThreePanelInterface() {
                   </p>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
-                  <div className="hidden xl:flex items-center gap-2 text-xs text-gray-600 dark:text-gray-400 rounded-full border border-gray-200 dark:border-gray-800 px-3 py-1.5">
-                    <span>{uiLanguage === "zh" ? "自动折叠" : "Auto Collapse"}</span>
-                    <Switch
-                      className="data-[state=unchecked]:bg-gray-200 data-[state=unchecked]:border data-[state=unchecked]:border-gray-300"
-                      checked={autoCollapseEnabled}
-                      onCheckedChange={(v: boolean) => {
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8 rounded-full"
+                        title={uiLanguage === "zh" ? "视图设置" : "View settings"}
+                      >
+                        <Settings2 className="h-4 w-4" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="w-56">
+                      <DropdownMenuLabel>
+                        {uiLanguage === "zh" ? "视图设置" : "View settings"}
+                      </DropdownMenuLabel>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuCheckboxItem
+                        checked={autoCollapseEnabled}
+                        onCheckedChange={(v: boolean) => {
                         setAutoCollapseEnabled(!!v);
                         if (typeof window !== "undefined") {
                           localStorage.setItem(
@@ -5821,17 +6574,13 @@ export function ThreePanelInterface() {
                           setCollapsedSections({});
                           setManualLocks({});
                         }
-                      }}
-                    />
-                    <span className="ml-2">
-                      {uiLanguage === "zh"
-                        ? "流式固定高度"
-                        : "Fixed Stream Height"}
-                    </span>
-                    <Switch
-                      className="data-[state=unchecked]:bg-gray-200 data-[state=unchecked]:border data-[state=unchecked]:border-gray-300"
-                      checked={fixedStreamingSectionHeightEnabled}
-                      onCheckedChange={(v: boolean) => {
+                        }}
+                      >
+                        {uiLanguage === "zh" ? "自动折叠" : "Auto collapse"}
+                      </DropdownMenuCheckboxItem>
+                      <DropdownMenuCheckboxItem
+                        checked={fixedStreamingSectionHeightEnabled}
+                        onCheckedChange={(v: boolean) => {
                         setFixedStreamingSectionHeightEnabled(!!v);
                         if (typeof window !== "undefined") {
                           localStorage.setItem(
@@ -5839,13 +6588,13 @@ export function ThreePanelInterface() {
                             (!!v).toString()
                           );
                         }
-                      }}
-                    />
-                    <span className="ml-2">{textLabels.moveDialogToLeft}</span>
-                    <Switch
-                      className="data-[state=unchecked]:bg-gray-200 data-[state=unchecked]:border data-[state=unchecked]:border-gray-300"
-                      checked={moveDialogToLeftPanel}
-                      onCheckedChange={(v: boolean) => {
+                        }}
+                      >
+                        {uiLanguage === "zh" ? "固定流式高度" : "Fixed stream height"}
+                      </DropdownMenuCheckboxItem>
+                      <DropdownMenuCheckboxItem
+                        checked={moveDialogToLeftPanel}
+                        onCheckedChange={(v: boolean) => {
                         setMoveDialogToLeftPanel(!!v);
                         if (typeof window !== "undefined") {
                           localStorage.setItem(
@@ -5853,9 +6602,12 @@ export function ThreePanelInterface() {
                             (!!v).toString()
                           );
                         }
-                      }}
-                    />
-                  </div>
+                        }}
+                      >
+                        {textLabels.moveDialogToLeft}
+                      </DropdownMenuCheckboxItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                   <Button
                     variant="outline"
                     size="sm"
@@ -5890,7 +6642,6 @@ export function ThreePanelInterface() {
               {/* Chat Messages */}
               <div
                 ref={messagesContainerRef}
-                onScroll={handleMessagesScroll}
                 className="flex-1 min-h-0 min-w-0 overflow-y-scroll overflow-x-hidden px-4 py-4 pr-5 space-y-6 scrollbar-auto"
               >
                 {renderedMessages}
@@ -5900,66 +6651,9 @@ export function ThreePanelInterface() {
 
               {/* Input Area */}
               {!moveDialogToLeftPanel && (
-              <div className="p-4 border-t border-gray-200 dark:border-gray-800 shrink-0 bg-white/80 dark:bg-gray-950/80">
-                <div className="flex gap-3 items-end">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => fileInputRef.current?.click()}
-                    className="h-10 w-10 p-0 rounded-full text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
-                    title={uiLanguage === "zh" ? "上传文件" : "Upload Files"}
-                  >
-                    <Paperclip className="h-4 w-4" />
-                  </Button>
-                  <div className="flex-1 relative">
-                    <Textarea
-                      value={inputValue}
-                      onChange={(e) => setInputValue(e.target.value)}
-                      placeholder={
-                        uiLanguage === "zh"
-                          ? "输入你的分析需求，或在左侧切换预设 Prompt..."
-                          : "Describe your analysis task, or pick a preset from the left panel..."
-                      }
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" && !e.shiftKey) {
-                          e.preventDefault();
-                          handleSendMessage();
-                        }
-                      }}
-                      className="min-h-24 rounded-2xl border-gray-200 dark:border-gray-800 bg-white dark:bg-black pr-4"
-                    />
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {isTyping ? (
-                      <Button
-                        onClick={handleStopMessage}
-                        size="sm"
-                        className="h-10 rounded-full px-4 bg-red-600 text-white hover:bg-red-700 dark:bg-red-600 dark:text-white dark:hover:bg-red-700"
-                        title={uiLanguage === "zh" ? "正在生成" : "Generating"}
-                        disabled={isStopping}
-                      >
-                        {isStopping ? (
-                          <RefreshCw className="h-4 w-4 mr-1 animate-spin" />
-                        ) : (
-                          <Square className="h-3.5 w-3.5 mr-1 fill-current" />
-                        )}
-                        {uiLanguage === "zh" ? "停止" : "Stop"}
-                      </Button>
-                    ) : (
-                      <Button
-                        onClick={handleSendMessage}
-                        size="sm"
-                        disabled={!inputValue.trim() && attachments.length === 0}
-                        className="h-10 rounded-full bg-black px-4 text-white dark:bg-white dark:text-black hover:bg-gray-800 dark:hover:bg-gray-200"
-                      >
-                        <Send className="h-4 w-4 mr-1" />
-                        {uiLanguage === "zh" ? "发送" : "Send"}
-                      </Button>
-                    )}
-                    {renderClearChatButton("h-10 rounded-full px-3")}
-                  </div>
-                </div>
-              </div>
+                renderChatComposer(
+                  "p-4 border-t border-gray-200 dark:border-gray-800 shrink-0 bg-white/80 dark:bg-gray-950/80"
+                )
               )}
 
             </div>
@@ -5968,7 +6662,7 @@ export function ThreePanelInterface() {
           <ResizableHandle withHandle />
 
           {/* Right Panel - Inspector */}
-          <ResizablePanel defaultSize={22} minSize={18}>
+          <ResizablePanel defaultSize={25} minSize={18}>
             <div className="flex h-full min-h-0 flex-col bg-white/80 dark:bg-gray-950/80 border-l border-gray-200/70 dark:border-gray-800/70">
               <div className="flex items-center justify-between border-b border-gray-200 dark:border-gray-800 px-4 py-2 shrink-0">
                 <div>
@@ -6185,7 +6879,7 @@ export function ThreePanelInterface() {
                         </span>
                       </div>
                       {filteredWorkspaceFiles.length ? (
-                        <div className="flex flex-wrap gap-3 p-3">
+                        <div className="flex flex-wrap gap-2 p-2">
                           {filteredWorkspaceFiles.map((file, index) => {
                             const isImage = file.category === "image" && !!file.preview_url;
                             const imageUrl = resolveWorkspaceFileUrl(file.preview_url || file.download_url);
@@ -6193,7 +6887,7 @@ export function ThreePanelInterface() {
                             return (
                               <button
                                 key={`${file.path || file.name}-${index}`}
-                                className={`group w-[156px] shrink-0 text-left rounded-2xl border p-2 transition-all hover:-translate-y-0.5 hover:shadow-md ${getFileAccentClasses(file)} ${selectedWorkspacePath === file.path ? "ring-2 ring-blue-300 dark:ring-blue-800" : ""}`}
+                                className={`group w-[124px] shrink-0 rounded-lg border p-1.5 text-left transition-all hover:-translate-y-0.5 hover:shadow-md ${getFileAccentClasses(file)} ${selectedWorkspacePath === file.path ? "ring-2 ring-blue-300 dark:ring-blue-800" : ""}`}
                                 onClick={() => {
                                   setSelectedWorkspacePath(file.path);
                                   openPreview(file);
@@ -6204,12 +6898,12 @@ export function ThreePanelInterface() {
                                 }}
                                 type="button"
                               >
-                                <div className="aspect-square overflow-hidden rounded-xl bg-white/80 dark:bg-gray-950/70 border border-white/60 dark:border-gray-800 flex items-center justify-center">
+                                <div className="aspect-[4/3] overflow-hidden rounded-md border border-white/60 bg-white/80 dark:border-gray-800 dark:bg-gray-950/70 flex items-center justify-center">
                                   {isImage ? (
                                     <img
                                       src={imageUrl}
                                       alt={file.name}
-                                      className="h-full w-full object-cover"
+                                      className="h-full w-full object-contain"
                                     />
                                   ) : file.category === "table" ? (
                                     <div className="flex flex-col items-center justify-center text-emerald-700 dark:text-emerald-300">
@@ -6238,13 +6932,13 @@ export function ThreePanelInterface() {
                                     </div>
                                   )}
                                 </div>
-                                <div className="px-1 pt-2">
+                                <div className="px-0.5 pt-1.5">
                                   <div className="truncate text-xs font-medium text-gray-900 dark:text-gray-100" title={file.path}>
                                     {file.name}
                                   </div>
-                                  <div className="mt-1 flex items-center justify-between gap-2 text-[11px] text-gray-500 dark:text-gray-400">
+                                  <div className="mt-0.5 flex items-center justify-between gap-1 text-[11px] text-gray-500 dark:text-gray-400">
                                     <span className="truncate">{formatFileSize(file.size)}</span>
-                                    <Badge variant="secondary" className="rounded-full px-1.5 py-0 text-[10px]">
+                                    <Badge variant="secondary" className="rounded-full px-1.5 py-0 text-xs">
                                       {isGeneratedWorkspaceFile(file)
                                         ? textLabels.generated
                                         : textLabels.uploaded}
@@ -6460,8 +7154,12 @@ export function ThreePanelInterface() {
                     size="sm"
                     onClick={() => {
                       setCodeEditorContent("");
+                      setCodeEditorOriginalCode("");
                       setSelectedCodeSection("");
                       setCodeExecutionResult("");
+                      setCodeEditInstruction("");
+                      setPendingCodeEdit(null);
+                      setAppliedCodeEdit(null);
                       setShowCodeEditor(false);
                     }}
                   >
@@ -6470,7 +7168,7 @@ export function ThreePanelInterface() {
                   <Button
                     size="sm"
                     onClick={executeCode}
-                    disabled={!codeEditorContent || isExecutingCode}
+                    disabled={!codeEditorContent || isExecutingCode || !!pendingCodeEdit}
                     className="bg-black text-white dark:bg-white dark:text-black"
                   >
                     {isExecutingCode
@@ -6486,6 +7184,65 @@ export function ThreePanelInterface() {
             </SheetHeader>
 
             <div className="flex-1 min-h-0 flex flex-col p-4 editor-container overflow-hidden bg-gray-50 dark:bg-gray-950">
+              <div className="mb-3 rounded-2xl border border-emerald-200 bg-emerald-50/70 p-3 dark:border-emerald-900/60 dark:bg-emerald-950/20">
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-medium text-emerald-950 dark:text-emerald-100">
+                      {uiLanguage === "zh" ? "自然语言修改代码" : "Natural-language code edit"}
+                    </div>
+                    <div className="text-xs text-emerald-700 dark:text-emerald-300">
+                      {uiLanguage === "zh"
+                        ? "输入修改意图，后端 LLM 会返回完整修改后的脚本。"
+                        : "Describe the change; the backend LLM returns a complete revised script."}
+                    </div>
+                  </div>
+                  {pendingCodeEdit && (
+                    <div className="flex shrink-0 items-center gap-2">
+                      <Button
+                        size="sm"
+                        onClick={confirmAiCodeEdit}
+                        className="bg-emerald-700 text-white hover:bg-emerald-800"
+                      >
+                        {uiLanguage === "zh" ? "应用修改" : "Apply"}
+                      </Button>
+                      <Button size="sm" variant="outline" onClick={rollbackAiCodeEdit}>
+                        {uiLanguage === "zh" ? "回滚预览" : "Rollback"}
+                      </Button>
+                    </div>
+                  )}
+                </div>
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <Textarea
+                    value={codeEditInstruction}
+                    onChange={(event) => setCodeEditInstruction(event.target.value)}
+                    placeholder={
+                      uiLanguage === "zh"
+                        ? "例如：把结果保存为 CSV，并为每个关键步骤补充中文注释"
+                        : "Example: save the result as CSV and add comments for each key step"
+                    }
+                    rows={1}
+                    className="h-12 min-h-12 min-w-0 resize-none bg-white/90 py-2 text-sm dark:bg-black/30 sm:flex-1"
+                    disabled={isEditingCodeWithAi}
+                  />
+                  <Button
+                    onClick={requestAiCodeEdit}
+                    disabled={
+                      isEditingCodeWithAi ||
+                      !codeEditorContent.trim() ||
+                      !codeEditInstruction.trim()
+                    }
+                    className="h-12 bg-emerald-700 text-white hover:bg-emerald-800 sm:w-28"
+                  >
+                    {isEditingCodeWithAi
+                      ? uiLanguage === "zh"
+                        ? "生成中..."
+                        : "Editing..."
+                      : uiLanguage === "zh"
+                        ? "生成修改"
+                        : "Generate"}
+                  </Button>
+                </div>
+              </div>
               <div
                 className="min-h-0 border border-gray-200 dark:border-gray-700 rounded-2xl overflow-hidden bg-white dark:bg-black flex flex-col"
                 style={{ height: `${editorHeight}%` }}
@@ -6500,12 +7257,12 @@ export function ThreePanelInterface() {
                     </span>
                   )}
                 </div>
-                <div className="flex-1 min-h-0">
+                <div className="flex-1 min-h-0 relative">
                   <Editor
                     height="100%"
                     defaultLanguage="python"
                     value={codeEditorContent}
-                    onChange={(value) => setCodeEditorContent(value || "")}
+                    onChange={handleCodeEditorChange}
                     theme={isDarkMode ? "vs-dark" : "light"}
                     options={{
                       fontSize: 14,
@@ -6548,6 +7305,64 @@ export function ThreePanelInterface() {
                       </div>
                     }
                   />
+                  {pendingCodeEdit && (
+                    <div className="absolute inset-0 z-10 overflow-auto bg-white font-mono text-[13px] leading-5 dark:bg-black">
+                      {pendingCodeEdit.diffRows.map((row) => (
+                        <div
+                          key={row.id}
+                          className={
+                            row.type === "added"
+                              ? "flex min-w-max border-l-4 border-emerald-500 bg-emerald-50 text-emerald-950 dark:bg-emerald-950/40 dark:text-emerald-100"
+                              : row.type === "removed"
+                                ? "flex min-w-max border-l-4 border-red-500 bg-red-50 text-red-950 dark:bg-red-950/40 dark:text-red-100"
+                                : "flex min-w-max border-l-4 border-transparent text-gray-800 dark:text-gray-200"
+                          }
+                        >
+                          <span className="w-12 shrink-0 select-none border-r border-gray-100 px-2 py-0.5 text-right text-gray-400 dark:border-gray-800">
+                            {row.oldLineNumber ?? ""}
+                          </span>
+                          <span className="w-12 shrink-0 select-none border-r border-gray-100 px-2 py-0.5 text-right text-gray-400 dark:border-gray-800">
+                            {row.newLineNumber ?? ""}
+                          </span>
+                          <span className="w-7 shrink-0 select-none px-2 py-0.5 text-center font-semibold">
+                            {row.type === "added" ? "+" : row.type === "removed" ? "-" : " "}
+                          </span>
+                          <SyntaxHighlighter
+                            language="python"
+                            style={isDarkMode ? oneDark : oneLight}
+                            PreTag="div"
+                            CodeTag="span"
+                            customStyle={{
+                              margin: 0,
+                              padding: "0.125rem 0.5rem",
+                              flex: 1,
+                              minWidth: 0,
+                              overflow: "visible",
+                              background: "transparent",
+                              fontFamily: "inherit",
+                              fontSize: "inherit",
+                              lineHeight: "1.25rem",
+                              whiteSpace: "pre",
+                            }}
+                            codeTagProps={{
+                              style: {
+                                display: "block",
+                                fontFamily: "inherit",
+                                whiteSpace: "pre",
+                              },
+                            }}
+                          >
+                            {row.content || " "}
+                          </SyntaxHighlighter>
+                        </div>
+                      ))}
+                      {pendingCodeEdit.diffRows.length === 0 && (
+                        <div className="p-4 text-sm text-gray-500">
+                          {uiLanguage === "zh" ? "没有代码差异" : "No code changes."}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -6718,6 +7533,141 @@ export function ThreePanelInterface() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <Dialog open={isSampleDialogOpen} onOpenChange={setIsSampleDialogOpen}>
+        <DialogContent className="flex max-h-[min(760px,calc(100vh-2rem))] flex-col overflow-hidden p-0 sm:max-w-3xl">
+          <DialogHeader className="shrink-0 border-b border-gray-200 px-5 py-4 dark:border-gray-800">
+            <DialogTitle>
+              {uiLanguage === "zh" ? "加载示例数据" : "Load sample data"}
+            </DialogTitle>
+            <DialogDescription>
+              {uiLanguage === "zh"
+                ? "选择一个公开数据源和一个分析问题。"
+                : "Choose a public dataset and an analysis question."}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+            {isSampleCatalogLoading ? (
+              <div className="flex h-48 items-center justify-center text-sm text-gray-500">
+                <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+                {uiLanguage === "zh" ? "正在加载数据目录" : "Loading data catalog"}
+              </div>
+            ) : sampleCatalog.length ? (
+              <div className="grid gap-5 md:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)]">
+                <section>
+                  <h3 className="mb-2 text-xs font-semibold text-gray-600 dark:text-gray-300">
+                    {uiLanguage === "zh" ? "数据源" : "Dataset"}
+                  </h3>
+                  <div className="space-y-2" role="radiogroup">
+                    {sampleCatalog.map((dataset) => {
+                      const active = dataset.id === selectedSampleId;
+                      return (
+                        <button
+                          key={dataset.id}
+                          type="button"
+                          role="radio"
+                          aria-checked={active}
+                          onClick={() => {
+                            setSelectedSampleId(dataset.id);
+                            setSelectedSampleQuestionId(dataset.questions[0].id);
+                          }}
+                          className={`w-full rounded-md border px-3 py-2.5 text-left transition-colors ${
+                            active
+                              ? "border-blue-500 bg-blue-50 dark:border-blue-500 dark:bg-blue-950/30"
+                              : "border-gray-200 hover:border-gray-300 hover:bg-gray-50 dark:border-gray-800 dark:hover:border-gray-700 dark:hover:bg-gray-900"
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-sm font-semibold text-gray-900 dark:text-white">
+                              {dataset.title[uiLanguage]}
+                            </span>
+                            <span className="shrink-0 text-[11px] text-gray-400">
+                              {dataset.files.length} {uiLanguage === "zh" ? "个文件" : dataset.files.length === 1 ? "file" : "files"}
+                            </span>
+                          </div>
+                          <p className="mt-1 text-xs leading-5 text-gray-500 dark:text-gray-400">
+                            {dataset.description[uiLanguage]}
+                          </p>
+                          <p className="mt-1 truncate text-[11px] text-gray-400" title={dataset.files.join(", ")}>
+                            {dataset.files.join(", ")}
+                          </p>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </section>
+
+                <section>
+                  <h3 className="mb-2 text-xs font-semibold text-gray-600 dark:text-gray-300">
+                    {uiLanguage === "zh" ? "分析问题" : "Analysis question"}
+                  </h3>
+                  <div className="space-y-2" role="radiogroup">
+                    {selectedSample?.questions.map((question) => {
+                      const active = question.id === selectedSampleQuestionId;
+                      return (
+                        <button
+                          key={question.id}
+                          type="button"
+                          role="radio"
+                          aria-checked={active}
+                          onClick={() => setSelectedSampleQuestionId(question.id)}
+                          className={`w-full rounded-md border px-3 py-2.5 text-left transition-colors ${
+                            active
+                              ? "border-emerald-500 bg-emerald-50 dark:border-emerald-500 dark:bg-emerald-950/20"
+                              : "border-gray-200 hover:border-gray-300 hover:bg-gray-50 dark:border-gray-800 dark:hover:border-gray-700 dark:hover:bg-gray-900"
+                          }`}
+                        >
+                          <span className="text-sm font-semibold text-gray-900 dark:text-white">
+                            {question.title[uiLanguage]}
+                          </span>
+                          <p className="mt-1 max-h-20 overflow-hidden whitespace-pre-line text-xs leading-5 text-gray-500 dark:text-gray-400">
+                            {question.prompt[uiLanguage]}
+                          </p>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {selectedSampleQuestion && (
+                    <div className="mt-3 border-t border-gray-200 pt-3 dark:border-gray-800">
+                      <div className="max-h-32 overflow-y-auto whitespace-pre-line text-xs leading-5 text-gray-600 dark:text-gray-300">
+                        {selectedSampleQuestion.prompt[uiLanguage]}
+                      </div>
+                    </div>
+                  )}
+                </section>
+              </div>
+            ) : (
+              <div className="flex h-48 items-center justify-center text-sm text-gray-500">
+                {uiLanguage === "zh" ? "暂无可用示例数据" : "No sample datasets available"}
+              </div>
+            )}
+          </div>
+
+          <DialogFooter className="shrink-0 border-t border-gray-200 px-5 py-3 dark:border-gray-800">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setIsSampleDialogOpen(false)}
+              disabled={isLoadingSample}
+            >
+              {uiLanguage === "zh" ? "取消" : "Cancel"}
+            </Button>
+            <Button
+              type="button"
+              onClick={() => void loadSampleData()}
+              disabled={!selectedSampleQuestion || isLoadingSample}
+            >
+              {isLoadingSample ? (
+                <RefreshCw className="h-4 w-4 animate-spin" />
+              ) : (
+                <Database className="h-4 w-4" />
+              )}
+              {uiLanguage === "zh" ? "加载并填入问题" : "Load and fill question"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
 
       {/* 文件预览弹窗 */}

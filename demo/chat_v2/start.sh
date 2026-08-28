@@ -36,24 +36,28 @@ pkill -f "vite.*serve" 2>/dev/null || true
 pkill -f "node.*vite" 2>/dev/null || true
 pkill -f "react-scripts.*start" 2>/dev/null || true
 
-# Frontend port (default 4000, can override via FRONTEND_PORT)
-FRONTEND_PORT=${FRONTEND_PORT:-4000}
+# Resolve backend ports through the same .env loader used by the backend.
+FILE_SERVER_PORT=$(python3 -c 'from backend_app.settings import settings; print(settings.http_server_port)')
+BACKEND_PORT=$(python3 -c 'from backend_app.settings import settings; print(settings.backend_port)')
+FRONTEND_PORT=$(python3 -c 'from backend_app.settings import settings; print(settings.frontend_port)')
+
+export NEXT_PUBLIC_BACKEND_URL=${NEXT_PUBLIC_BACKEND_URL:-http://localhost:$BACKEND_PORT}
 
 # Check and clean ports (only LISTENers)
-check_port 8100
-check_port 8200
+check_port "$FILE_SERVER_PORT"
+check_port "$BACKEND_PORT"
 check_port "$FRONTEND_PORT"
 
 echo "Cleanup completed."
 echo ""
 
-# Start backend API (ports 8200, 8100)
+# Start backend API
 echo "Starting backend API..."
 nohup python3 backend.py > logs/backend.log 2>&1 &
 BACKEND_PID=$!
 echo "Backend PID: $BACKEND_PID"
-echo "API running on: http://localhost:8200"
-echo "File service running on: http://localhost:8100"
+echo "API running on: http://localhost:$BACKEND_PORT"
+echo "File service running on: http://localhost:$FILE_SERVER_PORT"
 
 # Wait for backend to initialize
 sleep 3
@@ -76,9 +80,9 @@ echo ""
 echo "All services started successfully."
 echo ""
 echo "Service URLs:"
-echo "  Backend API:  http://localhost:8200"
+echo "  Backend API:  http://localhost:$BACKEND_PORT"
 echo "  Frontend:     http://localhost:$FRONTEND_PORT"
-echo "  File Service: http://localhost:8100"
+echo "  File Service: http://localhost:$FILE_SERVER_PORT"
 echo ""
 echo "Log files:"
 echo "  Backend: logs/backend.log"

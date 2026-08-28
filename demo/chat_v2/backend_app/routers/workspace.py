@@ -1,11 +1,24 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, File, Query, UploadFile
+from fastapi import APIRouter, File, HTTPException, Query, UploadFile
+from fastapi.concurrency import run_in_threadpool
 
 from ..services import workspace as workspace_service
+from ..services.docker_executor import release_session_container
+from ..services.session_state import clear_pending_continuation
 
 
 router = APIRouter()
+
+
+async def _release_workspace_container(session_id: str) -> bool:
+    try:
+        return await run_in_threadpool(release_session_container, session_id)
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Execution container could not be released",
+        ) from exc
 
 
 @router.get("/workspace/files")
@@ -98,14 +111,43 @@ async def upload_files(
     return await workspace_service.upload_files_to_workspace(session_id, files)
 
 
+@router.post("/workspace/sample")
+async def create_sample_data(
+    sample_id: str = Query(...),
+    session_id: str = Query("default"),
+    clear_existing: bool = Query(False),
+):
+    if clear_existing:
+        await _release_workspace_container(session_id)
+    result = workspace_service.create_sample_data(
+        session_id,
+        sample_id,
+        clear_existing=clear_existing,
+    )
+    if clear_existing:
+        clear_pending_continuation(session_id)
+    return result
+
+
+@router.get("/workspace/samples")
+async def get_sample_catalog():
+    return workspace_service.get_sample_catalog()
+
+
 @router.delete("/workspace/clear")
 async def clear_workspace(session_id: str = Query("default")):
-    return workspace_service.clear_workspace(session_id)
+    await _release_workspace_container(session_id)
+    result = workspace_service.clear_workspace(session_id)
+    clear_pending_continuation(session_id)
+    return result
 
 
 @router.post("/workspace/clear")
 async def clear_workspace_via_post(session_id: str = Query("default")):
-    return workspace_service.clear_workspace(session_id)
+    await _release_workspace_container(session_id)
+    result = workspace_service.clear_workspace(session_id)
+    clear_pending_continuation(session_id)
+    return result
 
 
 @router.post("/workspace/upload-to")

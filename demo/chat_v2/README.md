@@ -1,6 +1,6 @@
-# Chat Demo
+# DA-Studio (Chat Demo)
 
-`demo/chat_v2` is the browser-based DeepAnalyze demo. It includes the backend API, the workspace/file layer, the frontend UI, and both local and Docker execution modes.
+`demo/chat_v2` is **DA-Studio**, the browser-based DeepAnalyze demo system presented in the PVLDB demo paper *"DA-Studio: An Agentic System for End-to-End Data Analysis"*. It includes the backend API, the workspace/file layer, the frontend UI, and both local and Docker execution modes.
 
 [Chinese Version](./README_ZH.md)
 
@@ -14,6 +14,9 @@
 - Switch between Chinese and English UI
 - Run code either locally or inside Docker
 - Choose model provider: Local, HeyWhale API, or Custom OpenAI-compatible API
+- Select the exact workspace files included in each analysis task
+- Restore task configuration, chat traces, and execution history per session
+- Persist every agent/manual code run with its script, diff, output, and artifacts
 
 ## Model Provider Settings
 
@@ -77,25 +80,37 @@ Copy-Item .env.example .env
 
 ### Local mode
 
-Recommended as the default if the local machine already has the required Python data-analysis dependencies.
+Local execution is intended only for trusted development environments. It runs generated
+Python directly on the host and is disabled unless the risk is explicitly accepted:
 
 ```env
 DEEPANALYZE_EXECUTION_MODE=local
+DEEPANALYZE_ALLOW_UNSAFE_LOCAL_EXECUTION=true
 ```
 
 ### Docker mode
 
-Use this if you want an isolated execution environment.
+Docker is the default and required mode for sandboxed execution. Each session receives a
+separate container that mounts only that session's workspace. Network access is disabled
+by default, and memory, CPU, PID, read-only filesystem, non-root user, and execution-time
+limits are applied from `.env`.
 
 ```env
 DEEPANALYZE_EXECUTION_MODE=docker
 ```
 
-Important:
+At startup, the backend checks both the Docker CLI and daemon. If the execution
+image is missing, it is built automatically from the bundled `Dockerfile.exec`.
+The first startup takes longer because it downloads the base image and Python
+dependencies.
 
-- The system does not auto-build the Docker image
-- If the target machine has no image, Docker execution will fail immediately
-- You must build the image manually first
+Disable automatic builds when images are managed by an external deployment pipeline:
+
+```env
+DEEPANALYZE_DOCKER_AUTO_BUILD=false
+```
+
+The image can also be built manually:
 
 Example:
 
@@ -103,6 +118,48 @@ Example:
 cd demo/chat_v2
 docker build -t deepanalyze-chat-exec:latest -f Dockerfile.exec .
 ```
+
+Resource limits can be adjusted with `DEEPANALYZE_DOCKER_MEMORY`, `DEEPANALYZE_DOCKER_CPUS`,
+`DEEPANALYZE_DOCKER_PIDS_LIMIT`, and `DEEPANALYZE_DOCKER_NETWORK_MODE`.
+
+## Safety And Agent Budgets
+
+- Session identifiers and all workspace paths are validated against the workspace root.
+- Uploads are streamed and constrained by per-file, per-session size, and file-count limits.
+- Model output must contain complete structured actions and exactly one terminal
+  `<Code>` or `<Answer>` block. Incomplete code is never executed.
+- Each session permits only one active analysis or manual execution.
+- Agent rounds, response size, total duration, and individual code runs
+  have independent limits. `/chat/stop` also cancels an active code execution.
+
+## Session State And Managed Execution
+
+Session state is stored under `.session_state/<session>/session.json` beside, not inside,
+the execution workspaces. It is never mounted into sandbox containers or exposed by
+workspace APIs, and it survives clearing user workspace files. The browser restores this
+server state first and uses a session-scoped local cache only as an offline fallback.
+
+Both autonomous `<Code>` actions and Code Lab reruns use the same managed execution service.
+Each run saves a versioned script under `generated/code/`, registers changed artifacts,
+records the edit instruction and unified diff, and emits a Code/Execute/File trace that is
+included in later report exports.
+
+The chat composer defaults to **Auto** interaction mode. In **Manual** mode, the backend
+pauses after every code execution: the Execute block is already visible in the browser, but
+its result has not yet been sent to the model. Continue directly or enter an optional
+instruction before continuing. The backend appends a non-empty instruction to the pending
+execution feedback with this stable format:
+
+```text
+<execution output>
+
+# Additional Instruction
+<user instruction>
+```
+
+The pending continuation is stored in the server-side session state, so the waiting state
+survives a browser refresh without exposing the internal model conversation through the
+session API.
 
 ## Run
 
@@ -123,22 +180,31 @@ bash stop.sh
 ### Windows
 
 ```bat
-cd demo\chat
+cd demo\chat_v2
 start.bat
 ```
 
 Stop:
 
 ```bat
-cd demo\chat
+cd demo\chat_v2
 stop.bat
 ```
 
 Default addresses after startup:
 
 - Frontend: `http://localhost:4000`
-- Backend API: `http://localhost:8200`
+- Backend API: `http://localhost:9000`
 - File service: `http://localhost:8100`
+
+Ports can be changed in `.env`. The startup and stop scripts use these values,
+and the startup script automatically points the frontend at the configured backend:
+
+```env
+DEEPANALYZE_BACKEND_PORT=8300
+DEEPANALYZE_FILE_SERVER_PORT=8100
+FRONTEND_PORT=4000
+```
 
 ## PDF Export
 

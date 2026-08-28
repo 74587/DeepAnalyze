@@ -49,13 +49,13 @@ def extract_sections_from_messages(messages: list[dict[str, Any]]) -> str:
     parts: list[str] = []
     appendix: list[str] = []
     tag_pattern = r"<(Analyze|Understand|Code|Execute|File|Answer)>([\s\S]*?)</\1>"
+    step = 1
 
     for message in messages:
         if (message or {}).get("role") != "assistant":
             continue
 
         content = str((message or {}).get("content") or "")
-        step = 1
         for match in re.finditer(tag_pattern, content, re.DOTALL):
             tag, segment = match.groups()
             segment = segment.strip()
