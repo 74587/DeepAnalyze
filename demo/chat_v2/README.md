@@ -129,7 +129,7 @@ Resource limits can be adjusted with `DEEPANALYZE_DOCKER_MEMORY`, `DEEPANALYZE_D
 - Model output must contain complete structured actions and exactly one terminal
   `<Code>` or `<Answer>` block. Incomplete code is never executed.
 - Each session permits only one active analysis or manual execution.
-- Agent rounds, code executions, response size, total duration, and individual code runs
+- Agent rounds, response size, total duration, and individual code runs
   have independent limits. `/chat/stop` also cancels an active code execution.
 
 ## Session State And Managed Execution

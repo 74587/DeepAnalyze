@@ -158,9 +158,6 @@ class Settings:
         "DEEPANALYZE_UPLOAD_CHUNK_BYTES", 1024 * 1024, minimum=64 * 1024
     )
     chat_max_rounds: int = _get_int_env("DEEPANALYZE_CHAT_MAX_ROUNDS", 12, minimum=1)
-    chat_max_code_executions: int = _get_int_env(
-        "DEEPANALYZE_CHAT_MAX_CODE_EXECUTIONS", 8, minimum=1
-    )
     chat_max_duration_sec: int = _get_int_env(
         "DEEPANALYZE_CHAT_MAX_DURATION_SEC", 900, minimum=1
     )

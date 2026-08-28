@@ -892,12 +892,6 @@ def bot_stream(
                 finished = True
                 continue
 
-            if code_execution_count >= settings.chat_max_code_executions:
-                yield _execution_status_block(
-                    "Budget Exceeded",
-                    f"analysis exceeded {settings.chat_max_code_executions} code executions",
-                )
-                break
             code_execution_count += 1
             conversation.append({"role": "assistant", "content": cur_res})
             code_str = _extract_code_to_execute(terminal_action.body)

@@ -32,7 +32,6 @@ class ChatProtocolIntegrationTest(unittest.TestCase):
             chat.settings,
             workspace_base_dir=self.temp_dir.name,
             chat_max_rounds=3,
-            chat_max_code_executions=2,
             chat_max_duration_sec=30,
             chat_max_response_chars=10_000,
         )
@@ -102,6 +101,36 @@ class ChatProtocolIntegrationTest(unittest.TestCase):
             )
         )
         self.assertEqual(len(reports), 1)
+
+    def test_code_execution_count_does_not_stop_analysis(self):
+        responses = iter(
+            [
+                stream_text(f"<Analyze>step {index}</Analyze><Code>print({index})</Code>")
+                for index in range(3)
+            ]
+            + [stream_text("<Answer>done</Answer>")]
+        )
+        settings_without_early_round_limit = replace(chat.settings, chat_max_rounds=5)
+        with (
+            patch.object(chat, "settings", settings_without_early_round_limit),
+            patch.object(chat, "_iter_local_stream", side_effect=lambda *_: next(responses)),
+            patch.object(
+                chat,
+                "execute_managed_code",
+                return_value=execution_outcome(),
+            ) as execute_mock,
+        ):
+            output = "".join(
+                chat.bot_stream(
+                    [{"role": "user", "content": "analyze"}],
+                    [],
+                    "session-unlimited-code-executions",
+                )
+            )
+
+        self.assertIn("<Answer>done</Answer>", output)
+        self.assertNotIn("analysis exceeded", output)
+        self.assertEqual(execute_mock.call_count, 3)
 
     def test_manual_mode_pauses_after_execute_before_model_feedback(self):
         model_stream = Mock(

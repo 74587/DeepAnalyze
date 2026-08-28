@@ -104,7 +104,7 @@ docker build -t deepanalyze-chat-exec:latest -f Dockerfile.exec .
 - 上传采用分块写入，并限制单文件大小、session 总容量和文件数量。
 - 模型输出必须是完整的结构化动作，且只能包含一个位于末尾的 `<Code>` 或 `<Answer>`；不完整的代码不会执行。
 - 同一个 session 同时只允许一个分析或手动执行任务。
-- 分别限制 Agent 轮次、代码执行次数、响应长度、总时长和单次代码时长；`/chat/stop` 也会取消正在运行的代码。
+- 分别限制 Agent 轮次、响应长度、总时长和单次代码时长；`/chat/stop` 也会取消正在运行的代码。
 
 ## Session 状态与统一执行
 

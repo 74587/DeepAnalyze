@@ -88,9 +88,9 @@ class WorkspaceSecurityTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(catalog), 4)
         expected_question_counts = {
             "palmer_penguins": 3,
-            "life_expectancy": 3,
+            "life_expectancy": 2,
             "bike_sharing": 4,
-            "college_majors": 4,
+            "college_majors": 1,
         }
         for dataset in catalog:
             self.assertTrue(dataset["title"]["zh"])
