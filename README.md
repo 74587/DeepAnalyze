@@ -2,7 +2,12 @@
 <img src="assets/logo.png" alt="DeepAnalyze" style="width: 60%; min-width: 300px; display: block; margin: auto;">
 </p>
 
+<p align="center" width="100%">
+<a href="https://trendshift.io/repositories/15727?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-15727" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/15727" alt="ruc-datalab%2FDeepAnalyze | Trendshift" width="250" height="55"/></a>
+</p>
+
 # DeepAnalyze: Agentic Large Language Models for Autonomous Data Science
+
 [![arXiv](https://img.shields.io/badge/arXiv-2510.16872-b31b1b.svg?logo=arXiv)](https://arxiv.org/abs/2510.16872)
 [![homepage](https://img.shields.io/badge/%F0%9F%8C%90%20Homepage%20-DeepAnalyze%20Cases-blue.svg)](https://ruc-deepanalyze.github.io/)
 [![model](https://img.shields.io/badge/%F0%9F%A4%97%20Huggingface%20-DeepAnalyze--8B-orange.svg)](https://huggingface.co/RUC-DataLab/DeepAnalyze-8B)
